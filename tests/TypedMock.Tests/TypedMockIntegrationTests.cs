@@ -7,6 +7,7 @@ using RestEase;
 using SampleClientApp;
 using TypedMock.Core;
 using TypedMock.Core.Fixtures;
+using TypedMock.Core.Scenarios;
 
 namespace TypedMock.Tests;
 
@@ -268,5 +269,159 @@ public class TypedMockIntegrationTests
                 Directory.Delete(tempFixturesDir, true);
             }
         }
+    }
+
+    [Fact]
+    public async Task Scenario7_WithScenario_MatchesSpecificScenarioCorrectly()
+    {
+        // Arrange
+        var mockOptions = new TypedMockOptions { Mode = MockMode.Replay };
+        await using var mockServer = new TypedMockServer(mockOptions);
+
+        mockServer.For<IWeatherApi>()
+            .Setup(x => x.GetForecastByCityAsync("Tokyo"))
+            .WithScenario("TyphoonAlert")
+            .Returns(new WeatherForecastDto
+            {
+                City = "Tokyo",
+                Date = DateOnly.FromDateTime(DateTime.Today),
+                TemperatureC = 14,
+                Summary = "Heavy Rain & Wind"
+            });
+
+        await mockServer.StartAsync();
+
+        // Act with scenario header
+        using var client = new HttpClient { BaseAddress = new Uri(mockServer.BaseUrl) };
+        client.DefaultRequestHeaders.Add("X-Mock-Scenario", "TyphoonAlert");
+        var restEaseClient = RestClient.For<IWeatherApi>(client);
+
+        var result = await restEaseClient.GetForecastByCityAsync("Tokyo");
+
+        // Assert
+        result.City.Should().Be("Tokyo");
+        result.Summary.Should().Be("Heavy Rain & Wind");
+    }
+
+    [Fact]
+    public async Task Scenario8_ContractDeduplication_DoesNotDuplicateEndpointsOnMultipleCalls()
+    {
+        var mockOptions = new TypedMockOptions { Mode = MockMode.Replay };
+        await using var mockServer = new TypedMockServer(mockOptions);
+
+        // Multiple setups for the same contract
+        mockServer.For<IWeatherApi>()
+            .Setup(x => x.GetForecastByCityAsync("Oslo"))
+            .Returns(new WeatherForecastDto { City = "Oslo", TemperatureC = 2, Summary = "Freezing" });
+
+        mockServer.For<IWeatherApi>()
+            .Setup(x => x.GetForecastByCityAsync("Madrid"))
+            .Returns(new WeatherForecastDto { City = "Madrid", TemperatureC = 28, Summary = "Hot" });
+
+        mockServer.RegisterContract<IWeatherApi>();
+
+        await mockServer.StartAsync();
+
+        var client = WeatherReportService.Create(mockServer.BaseUrl);
+        var oslo = await client.GetCitySummaryAsync("Oslo");
+        var madrid = await client.GetCitySummaryAsync("Madrid");
+
+        oslo.Should().Contain("Oslo");
+        madrid.Should().Contain("Madrid");
+    }
+
+    [Fact]
+    public async Task Scenario9_ExplicitScenario_NotFound_Returns404RatherThanSilentFallback()
+    {
+        // Arrange
+        var tempFixturesDir = Path.Combine(Path.GetTempPath(), "typedmock_scenario_404_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempFixturesDir);
+
+        try
+        {
+            var store = new TypedFixtureStore();
+            await store.SaveFixtureAsync(tempFixturesDir, new TypedFixture
+            {
+                Contract = "IWeatherApi",
+                Method = "GetForecastByCityAsync",
+                Scenario = "default",
+                Request = new TypedFixtureRequest
+                {
+                    HttpMethod = "GET",
+                    Path = "/weatherforecast/Rome",
+                    PathParameters = new() { { "city", "Rome" } }
+                },
+                Response = new TypedFixtureResponse
+                {
+                    StatusCode = 200,
+                    Data = System.Text.Json.Nodes.JsonNode.Parse("""
+                    {
+                        "date": "2026-11-04",
+                        "city": "Rome",
+                        "temperatureC": 21,
+                        "summary": "Pleasant"
+                    }
+                    """)
+                }
+            });
+
+            var mockOptions = new TypedMockOptions
+            {
+                Mode = MockMode.Replay,
+                FixturesDirectory = tempFixturesDir
+            };
+            await using var mockServer = new TypedMockServer(mockOptions);
+            mockServer.RegisterContract<IWeatherApi>();
+            await mockServer.StartAsync();
+
+            using var httpClient = new HttpClient { BaseAddress = new Uri(mockServer.BaseUrl) };
+            httpClient.DefaultRequestHeaders.Add("X-Mock-Scenario", "NonExistentScenario");
+            var client = RestClient.For<IWeatherApi>(httpClient);
+
+            var act = async () => await client.GetForecastByCityAsync("Rome");
+            var ex = await act.Should().ThrowAsync<ApiException>();
+            ex.Which.StatusCode.Should().Be(System.Net.HttpStatusCode.NotFound);
+        }
+        finally
+        {
+            if (Directory.Exists(tempFixturesDir))
+            {
+                Directory.Delete(tempFixturesDir, true);
+            }
+        }
+    }
+
+    [Fact]
+    public void Scenario10_ToFixture_SerializesProgrammaticRuleToFixture()
+    {
+        var method = typeof(IWeatherApi).GetMethod(nameof(IWeatherApi.GetForecastByCityAsync))!;
+        var rule = new ProgrammaticMockRule
+        {
+            InterfaceType = typeof(IWeatherApi),
+            Method = method,
+            ExpectedPathParameters = new() { { "city", "Kyoto" } },
+            ScenarioName = "CustomScenario",
+            StatusCode = 200,
+            ResponseData = new WeatherForecastDto
+            {
+                City = "Kyoto",
+                Date = DateOnly.FromDateTime(DateTime.Today),
+                TemperatureC = 19,
+                Summary = "Breezy"
+            }
+        };
+
+        var fixture = rule.ToFixture();
+
+        fixture.Contract.Should().Be(nameof(IWeatherApi));
+        fixture.Method.Should().Be(nameof(IWeatherApi.GetForecastByCityAsync));
+        fixture.Scenario.Should().Be("CustomScenario");
+        fixture.Response.StatusCode.Should().Be(200);
+        fixture.Response.Data.Should().NotBeNull();
+
+        var deserialized = TypedFixtureStore.ValidateAndDeserialize(fixture, typeof(WeatherForecastDto)) as WeatherForecastDto;
+        deserialized.Should().NotBeNull();
+        deserialized!.City.Should().Be("Kyoto");
+        deserialized.TemperatureC.Should().Be(19);
     }
 }

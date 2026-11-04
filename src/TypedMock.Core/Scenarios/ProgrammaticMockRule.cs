@@ -13,12 +13,17 @@ public class ProgrammaticMockRule
     public required Type InterfaceType { get; init; }
     public required MethodInfo Method { get; init; }
     public Dictionary<string, string> ExpectedPathParameters { get; init; } = [];
-    public string? ScenarioName { get; init; }
+    public Dictionary<string, string> ExpectedQueryParameters { get; init; } = [];
+    public string? ScenarioName { get; set; }
     public int StatusCode { get; set; } = 200;
     public object? ResponseData { get; set; }
-    public string ContentType { get; set; } = "application/json";
+    public string ContentType { get; set; } = "application/json; charset=utf-8";
 
-    public bool Matches(string method, Dictionary<string, string> pathParams, string? requestedScenario)
+    public bool Matches(
+        string method,
+        Dictionary<string, string> pathParams,
+        IReadOnlyDictionary<string, string>? queryParams,
+        string? requestedScenario)
     {
         if (!string.Equals(Method.Name, method, StringComparison.OrdinalIgnoreCase))
         {
@@ -41,8 +46,22 @@ public class ProgrammaticMockRule
             }
         }
 
+        if (queryParams != null)
+        {
+            foreach (var (k, v) in ExpectedQueryParameters)
+            {
+                if (!queryParams.TryGetValue(k, out var actualVal) || !string.Equals(v, actualVal, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+        }
+
         return true;
     }
+
+    public bool Matches(string method, Dictionary<string, string> pathParams, string? requestedScenario) =>
+        Matches(method, pathParams, null, requestedScenario);
 
     public TypedFixture ToFixture()
     {
@@ -60,7 +79,8 @@ public class ProgrammaticMockRule
             Scenario = ScenarioName ?? "programmatic",
             Request = new TypedFixtureRequest
             {
-                PathParameters = new Dictionary<string, string>(ExpectedPathParameters)
+                PathParameters = new Dictionary<string, string>(ExpectedPathParameters),
+                QueryParameters = new Dictionary<string, string>(ExpectedQueryParameters)
             },
             Response = new TypedFixtureResponse
             {
@@ -95,6 +115,7 @@ public class ContractMockSetup<TInterface> where TInterface : class
             ?? throw new InvalidOperationException($"Method {methodInfo.Name} not found in {typeof(TInterface).Name} contract endpoints.");
 
         var pathParams = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var queryParams = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var methodParams = methodInfo.GetParameters();
 
         for (var i = 0; i < methodCall.Arguments.Count; i++)
@@ -108,13 +129,22 @@ public class ContractMockSetup<TInterface> where TInterface : class
                 var val = EvaluateExpression(arg)?.ToString() ?? string.Empty;
                 pathParams[mapping.TargetName] = val;
             }
+            else if (mapping?.Kind == ParameterKind.Query)
+            {
+                var val = EvaluateExpression(arg)?.ToString();
+                if (val != null)
+                {
+                    queryParams[mapping.TargetName] = val;
+                }
+            }
         }
 
         var rule = new ProgrammaticMockRule
         {
             InterfaceType = typeof(TInterface),
             Method = methodInfo,
-            ExpectedPathParameters = pathParams
+            ExpectedPathParameters = pathParams,
+            ExpectedQueryParameters = queryParams
         };
 
         _registerRule(rule);
@@ -128,6 +158,18 @@ public class ContractMockSetup<TInterface> where TInterface : class
             return constant.Value;
         }
 
+        if (expression is MemberExpression memberExpr && memberExpr.Expression is ConstantExpression parentConstant)
+        {
+            if (memberExpr.Member is FieldInfo field)
+            {
+                return field.GetValue(parentConstant.Value);
+            }
+            if (memberExpr.Member is PropertyInfo prop)
+            {
+                return prop.GetValue(parentConstant.Value);
+            }
+        }
+
         var lambda = Expression.Lambda(expression);
         return lambda.Compile().DynamicInvoke();
     }
@@ -137,9 +179,7 @@ public class MethodMockSetup<TResult>(ProgrammaticMockRule rule)
 {
     public MethodMockSetup<TResult> WithScenario(string scenarioName)
     {
-        // Set scenario name
-        typeof(ProgrammaticMockRule).GetProperty(nameof(ProgrammaticMockRule.ScenarioName))
-            ?.SetValue(rule, scenarioName);
+        rule.ScenarioName = scenarioName;
         return this;
     }
 

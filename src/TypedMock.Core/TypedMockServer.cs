@@ -8,7 +8,6 @@ using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using TypedMock.Core.Contracts;
 using TypedMock.Core.Fixtures;
 using TypedMock.Core.Matching;
@@ -20,11 +19,16 @@ namespace TypedMock.Core;
 
 public class TypedMockServer : IAsyncDisposable
 {
+    private static readonly SocketsHttpHandler SharedHandler = new()
+    {
+        PooledConnectionLifetime = TimeSpan.FromMinutes(15)
+    };
+
     private readonly TypedMockOptions _options;
     private readonly List<ContractEndpoint> _registeredEndpoints = [];
     private readonly List<ProgrammaticMockRule> _programmaticRules = [];
     private readonly TypedFixtureStore _fixtureStore = new();
-    private readonly HttpClient _upstreamClient = new();
+    private readonly HttpClient _upstreamClient = new(SharedHandler, disposeHandler: false);
     private HttpProxyForwarder? _forwarder;
     private WebApplication? _app;
     private string? _baseUrl;
@@ -45,6 +49,11 @@ public class TypedMockServer : IAsyncDisposable
 
     public TypedMockServer RegisterContract(Type interfaceType)
     {
+        if (_registeredEndpoints.Any(e => e.InterfaceType == interfaceType))
+        {
+            return this;
+        }
+
         var endpoints = RestEaseContractScanner.Scan(interfaceType);
         _registeredEndpoints.AddRange(endpoints);
         return this;
@@ -101,7 +110,7 @@ public class TypedMockServer : IAsyncDisposable
     private async Task HandleRequestAsync(HttpContext context)
     {
         var path = context.Request.Path.Value ?? "/";
-        var method = new HttpMethod(context.Request.Method);
+        var method = context.Request.Method;
 
         // Admin Endpoints
         if (path.StartsWith("/__typedmock/status", StringComparison.OrdinalIgnoreCase))
@@ -132,7 +141,7 @@ public class TypedMockServer : IAsyncDisposable
 
         foreach (var endpoint in _registeredEndpoints)
         {
-            if (endpoint.HttpMethod != method) continue;
+            if (!string.Equals(endpoint.HttpMethod.Method, method, StringComparison.OrdinalIgnoreCase)) continue;
 
             var match = RoutePatternMatcher.Match(endpoint.PathTemplate, path);
             if (match.IsMatch)
@@ -166,10 +175,12 @@ public class TypedMockServer : IAsyncDisposable
         // Replay or Hybrid Mode
         if (matchedEndpoint != null)
         {
+            var queryParams = context.Request.Query.ToDictionary(q => q.Key, q => q.Value.ToString(), StringComparer.OrdinalIgnoreCase);
+
             // 1. Check Programmatic Rules
             var rule = _programmaticRules.FirstOrDefault(r =>
                 r.InterfaceType == matchedEndpoint.InterfaceType &&
-                r.Matches(matchedEndpoint.Method.Name, pathParams, scenarioName));
+                r.Matches(matchedEndpoint.Method.Name, pathParams, queryParams, scenarioName));
 
             if (rule != null)
             {
@@ -193,7 +204,15 @@ public class TypedMockServer : IAsyncDisposable
             if (fixture != null)
             {
                 context.Response.StatusCode = fixture.Response.StatusCode;
-                context.Response.ContentType = fixture.Response.ContentType;
+
+                var contentType = string.IsNullOrWhiteSpace(fixture.Response.ContentType)
+                    ? "application/json; charset=utf-8"
+                    : fixture.Response.ContentType;
+                if (!contentType.Contains("charset", StringComparison.OrdinalIgnoreCase) && contentType.Contains("json", StringComparison.OrdinalIgnoreCase))
+                {
+                    contentType += "; charset=utf-8";
+                }
+                context.Response.ContentType = contentType;
 
                 if (fixture.Response.Data != null)
                 {

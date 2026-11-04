@@ -16,6 +16,9 @@ public class TypedFixtureStore
 
     private readonly List<TypedFixture> _fixtures = [];
     private readonly object _lock = new();
+    private readonly SemaphoreSlim _fileLock = new(1, 1);
+
+    public Action<string>? OnLogWarning { get; set; }
 
     public IReadOnlyList<TypedFixture> AllFixtures
     {
@@ -60,7 +63,15 @@ public class TypedFixtureStore
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[TypedFixtureStore] Failed to load fixture from {file}: {ex.Message}");
+                var msg = $"[TypedFixtureStore] Failed to load fixture from {file}: {ex.Message}";
+                if (OnLogWarning != null)
+                {
+                    OnLogWarning(msg);
+                }
+                else
+                {
+                    Console.WriteLine(msg);
+                }
             }
         }
     }
@@ -74,7 +85,16 @@ public class TypedFixtureStore
         var filePath = Path.Combine(targetDir, $"{sanitizedScenario}.json");
 
         var json = JsonSerializer.Serialize(fixture, JsonOptions);
-        await File.WriteAllTextAsync(filePath, json);
+
+        await _fileLock.WaitAsync();
+        try
+        {
+            await File.WriteAllTextAsync(filePath, json);
+        }
+        finally
+        {
+            _fileLock.Release();
+        }
 
         AddFixture(fixture);
     }
@@ -107,34 +127,41 @@ public class TypedFixtureStore
         string? requestedScenario,
         Dictionary<string, string> pathParams)
     {
+        List<TypedFixture> candidates;
         lock (_lock)
         {
-            var candidates = _fixtures.Where(f =>
+            candidates = _fixtures.Where(f =>
                 string.Equals(f.Contract, contract, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(f.Method, method, StringComparison.OrdinalIgnoreCase)).ToList();
-
-            if (candidates.Count == 0) return null;
-
-            // 1. Exact scenario match requested via header / query
-            if (!string.IsNullOrWhiteSpace(requestedScenario))
-            {
-                var scenarioMatch = candidates.FirstOrDefault(f =>
-                    string.Equals(f.Scenario, requestedScenario, StringComparison.OrdinalIgnoreCase));
-                if (scenarioMatch != null) return scenarioMatch;
-            }
-
-            // 2. Match by path parameters
-            var paramMatch = candidates.FirstOrDefault(f => AreParamsEqual(f.Request.PathParameters, pathParams));
-            if (paramMatch != null) return paramMatch;
-
-            // 3. Fallback to "default" scenario
-            var defaultMatch = candidates.FirstOrDefault(f =>
-                string.Equals(f.Scenario, "default", StringComparison.OrdinalIgnoreCase));
-            if (defaultMatch != null) return defaultMatch;
-
-            // 4. Fallback to any first candidate
-            return candidates.FirstOrDefault();
         }
+
+        if (candidates.Count == 0) return null;
+
+        var hasExplicitScenario = !string.IsNullOrWhiteSpace(requestedScenario) &&
+                                  !string.Equals(requestedScenario, "default", StringComparison.OrdinalIgnoreCase);
+
+        // 1. Exact scenario match requested via header / query
+        if (hasExplicitScenario)
+        {
+            var scenarioMatch = candidates.FirstOrDefault(f =>
+                string.Equals(f.Scenario, requestedScenario, StringComparison.OrdinalIgnoreCase));
+            if (scenarioMatch != null) return scenarioMatch;
+
+            // When an explicit scenario is requested, don't silently serve fallback data
+            return null;
+        }
+
+        // 2. Match by path parameters
+        var paramMatch = candidates.FirstOrDefault(f => AreParamsEqual(f.Request.PathParameters, pathParams));
+        if (paramMatch != null) return paramMatch;
+
+        // 3. Fallback to "default" scenario
+        var defaultMatch = candidates.FirstOrDefault(f =>
+            string.Equals(f.Scenario, "default", StringComparison.OrdinalIgnoreCase));
+        if (defaultMatch != null) return defaultMatch;
+
+        // 4. Fallback to any first candidate
+        return candidates.FirstOrDefault();
     }
 
     private static bool AreParamsEqual(Dictionary<string, string> a, Dictionary<string, string> b)
