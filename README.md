@@ -141,3 +141,11 @@ Host: mock-server:5050
 X-Mock-Scenario: StormWarning
 ```
 TypedMock will automatically resolve the fixture matching `IWeatherApi/GetForecastByCityAsync/StormWarning.json`.
+
+---
+
+## 📚 In-Depth Guides
+
+- [**How to Discover Contracts in Production**](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/docs/CONTRACT_DISCOVERY_IN_PRODUCTION.md): Details the 3 production deployment patterns: Dynamic Directory Scanning (`--contracts-dir`), Convention-based AppDomain scanning, and Dynamic NuGet Feed pulling.
+- [**Adapting Contract-Driven Mocking to Java Infrastructure**](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/docs/JAVA_ECOSYSTEM_INTEGRATION.md): Explains how RestEase/NuGet concepts map to Java (OpenFeign, `@HttpExchange`, Maven `.jar`), and details the 3 strategies for Java integration (OpenAPI universal bridge, contract-first generation, and pure Java-native tooling).
+
