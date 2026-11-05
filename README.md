@@ -1,5 +1,7 @@
 # TypedMock: Contract-Driven Mock Proxy (Proof of Concept)
 
+> 📖 **Для обсуждения с коллегами и демо:** подготовлен русскоязычный пошаговый гид с описанием ценности, архитектуры, команд запуска и демонстрации: [**WALKTHROUGH.md**](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/WALKTHROUGH.md).
+
 A lightweight, contract-driven mocking and proxying solution for .NET microservices. It solves the maintenance nightmares of traditional record-and-replay tools (WireMock, Mountebank) by using **published NuGet integration contracts** (specifically **RestEase** interfaces and DTOs).
 
 ---
