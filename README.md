@@ -73,6 +73,8 @@ flowchart LR
   - `TypedFixtureStore`: Manages typed JSON fixtures and validates them against DTOs.
   - `HttpProxyForwarder`: Reverse proxies requests to real systems and records typed interactions.
   - `TypedMockServer`: Embedded or standalone Kestrel host supporting Record, Replay, and Hybrid modes.
+  - `Generators`: Code generation engine (`CSharpStubGenerator`, `CSharpValueEmitter`, `RecordedInteraction`) transforming captured traffic into strongly-typed C# ASP.NET Core controllers.
+  - `Hosting`: Embedded test server harness (`StubServerHost`, `StubExceptionMiddleware`) for running generated controllers over HTTP.
 - [`src/TypedMock.Server`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/src/TypedMock.Server): Standalone console/container executable for dev and test stands.
 - [`tests/TypedMock.Tests`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/tests/TypedMock.Tests): End-to-end integration tests proving the concept.
 
@@ -91,6 +93,7 @@ The test suite validates:
 - **Scenario 4:** Simulating external service errors (e.g. HTTP 500).
 - **Scenario 5:** Catching contract drift (broken/corrupted fixtures fail validation immediately).
 - **Scenario 6:** Recording and replaying POST requests with body payloads.
+- **C# Stub Code Generation:** Recording real traffic to emit strongly-typed ASP.NET Core controllers, in-memory Roslyn compilation, remote HTTP hosting via `StubServerHost`, manual subclass scenario overriding, and compile-time contract drift detection (`CS0535`).
 
 ### 2. Run the Standalone Server on a Test Stand
 
@@ -150,4 +153,5 @@ TypedMock will automatically resolve the fixture matching `IWeatherApi/GetForeca
 - [**Adapting Contract-Driven Mocking to Java Infrastructure**](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/docs/JAVA_ECOSYSTEM_INTEGRATION.md): Explains how RestEase/NuGet concepts map to Java (OpenFeign, `@HttpExchange`, Maven `.jar`), and details the 3 strategies for Java integration (OpenAPI universal bridge, contract-first generation, and pure Java-native tooling).
 - [**Setting Up Scenario Fixtures on Test Stands for QA**](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/docs/TEST_STAND_SCENARIO_SETUP.md): Explains 6 practical architectures for manual testing engineers using browser web apps (QA dev toolbars with cookie propagation, URL query params, TypedMock Admin UI, test personas, input conventions, and OpenTelemetry baggage).
 - [**Authoring C# Typed Fixtures vs. Raw JSON**](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/docs/CSHARP_TYPED_FIXTURES.md): Details 3 patterns for authoring fixtures in C# with compile-time type safety (in-memory test setups, compiled fixture DLLs for standalone servers, and code-first JSON generator).
+- [**Contract-Driven C# Code-Generated Stub Controllers**](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/docs/CSHARP_CODEGEN_STUB_CONTROLLERS.md): Complete guide to recording traffic and emitting version-controlled C# ASP.NET Core controllers with baseline switch dispatches, manual subclass scenario hooks, in-memory unit testing, and compile-time drift detection.
 

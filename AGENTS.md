@@ -20,6 +20,7 @@ dotnet test
 # Run a single test or test subset (Note: Name~ does NOT match in this runner; use FullyQualifiedName~)
 dotnet test --filter "FullyQualifiedName~Scenario1"
 dotnet test --filter "FullyQualifiedName~TypedMockIntegrationTests"
+dotnet test --filter "FullyQualifiedName~CSharpStubIntegrationTests"
 
 # Verify code formatting
 dotnet format --verify-no-changes
@@ -45,10 +46,11 @@ dotnet run --project src/SampleClientApp -- http://localhost:5050
   - Scans RestEase contract interfaces via `RestEaseContractScanner` (`[Get]`, `[Post]`, `[Path]`, `[Body]`, `[Query]`, `[Header]`).
   - Modes: `Replay` (local fixtures / programmatic rules), `Record` (reverse proxy to upstream + save typed fixtures), `Hybrid` (replay if matched, fallback to upstream proxy).
   - Enforces schema safety: validates that fixture JSON response bodies deserialize into contract DTO return types at runtime; throws `ContractValidationException` on schema drift.
+  - C# Code Generation: `CSharpStubGenerator`, `CSharpValueEmitter`, and `StubServerHost` to record upstream traffic into version-controlled ASP.NET Core controllers with scenario hooks and compile-time drift detection.
 - `src/TypedMock.Server`: Standalone CLI host for test stands / containers. Exposes diagnostic health status at `/__typedmock/status`.
 - `src/SampleExternalService`: Upstream test server exposing minimal API endpoints and `Program.StartServerAsync(int port)`.
 - `src/SampleClientApp`: Consumer client invoking `WeatherReportService` via `RestClient.For<IWeatherApi>(url)`.
-- `tests/TypedMock.Tests`: xUnit integration test suite proving record, replay, programmatic setups, 500 error simulations, contract drift detection, and POST payload round-tripping.
+- `tests/TypedMock.Tests`: xUnit integration test suite proving record, replay, programmatic setups, 500 error simulations, contract drift detection, POST payload round-tripping, and C# stub controller generation.
 
 ## Operational & Testing Quirks
 

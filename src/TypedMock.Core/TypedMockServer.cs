@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using TypedMock.Core.Contracts;
 using TypedMock.Core.Fixtures;
+using TypedMock.Core.Generators;
 using TypedMock.Core.Matching;
 using TypedMock.Core.Models;
 using TypedMock.Core.Proxy;
@@ -41,6 +42,24 @@ public class TypedMockServer : IAsyncDisposable
     public string BaseUrl => _baseUrl ?? throw new InvalidOperationException("Server has not been started yet.");
     public MockMode Mode => _options.Mode;
     public TypedFixtureStore FixtureStore => _fixtureStore;
+    public IReadOnlyList<RecordedInteraction> RecordedInteractions => _forwarder?.RecordedInteractions ?? [];
+
+    public string GenerateStubSourceCode<TContract>(CSharpStubGeneratorOptions? options = null) where TContract : class
+    {
+        return CSharpStubGenerator.Generate<TContract>(RecordedInteractions, options);
+    }
+
+    public async Task<string> SaveStubSourceCodeAsync<TContract>(string outputPath, CSharpStubGeneratorOptions? options = null) where TContract : class
+    {
+        var code = GenerateStubSourceCode<TContract>(options);
+        var dir = Path.GetDirectoryName(outputPath);
+        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+        {
+            Directory.CreateDirectory(dir);
+        }
+        await File.WriteAllTextAsync(outputPath, code);
+        return code;
+    }
 
     public TypedMockServer RegisterContract<TInterface>() where TInterface : class
     {

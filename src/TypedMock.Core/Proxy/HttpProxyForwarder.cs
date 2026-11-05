@@ -1,13 +1,28 @@
 using System.Net.Http.Headers;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http;
 using TypedMock.Core.Fixtures;
+using TypedMock.Core.Generators;
 using TypedMock.Core.Models;
 
 namespace TypedMock.Core.Proxy;
 
 public class HttpProxyForwarder(HttpClient httpClient, TypedFixtureStore fixtureStore)
 {
+    private readonly List<RecordedInteraction> _recordedInteractions = [];
+
+    public IReadOnlyList<RecordedInteraction> RecordedInteractions
+    {
+        get
+        {
+            lock (_recordedInteractions)
+            {
+                return _recordedInteractions.ToList();
+            }
+        }
+    }
+
     public async Task<bool> ForwardAndRecordAsync(
         HttpContext context,
         Uri targetBaseUri,
@@ -140,9 +155,26 @@ public class HttpProxyForwarder(HttpClient httpClient, TypedFixtureStore fixture
             };
 
             // Contract Validation: if response type is known and 2xx, validate against DTO
+            object? deserializedObj = null;
             if (matchedEndpoint.ResponseType != null && (int)upstreamResponse.StatusCode is >= 200 and < 300)
             {
-                TypedFixtureStore.ValidateAndDeserialize(fixture, matchedEndpoint.ResponseType);
+                deserializedObj = TypedFixtureStore.ValidateAndDeserialize(fixture, matchedEndpoint.ResponseType);
+            }
+
+            var interaction = new RecordedInteraction
+            {
+                Endpoint = matchedEndpoint,
+                PathParameters = new Dictionary<string, string>(pathParams),
+                QueryParameters = context.Request.Query.ToDictionary(q => q.Key, q => q.Value.ToString()),
+                RequestBody = requestBodyNode?.ToJsonString(),
+                StatusCode = (int)upstreamResponse.StatusCode,
+                ResponseBody = responseString,
+                DeserializedResponse = deserializedObj
+            };
+
+            lock (_recordedInteractions)
+            {
+                _recordedInteractions.Add(interaction);
             }
 
             await fixtureStore.SaveFixtureAsync(fixturesDirectory, fixture);
