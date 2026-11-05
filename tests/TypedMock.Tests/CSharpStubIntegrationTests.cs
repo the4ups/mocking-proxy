@@ -305,53 +305,88 @@ public class CSharpStubIntegrationTests
     }
 
     [Fact]
-    public async Task Test7_SaveStubSourceCodeAsync_WritesValidCompilableSourceToFileOnDisk()
+    public async Task Test7_SaveStubSourceCodeAsync_WritesGeneratedStubToTestsFolder()
     {
         // 1. Arrange: Record real traffic through the mock proxy
         await using var realService = await SampleExternalService.Program.StartServerAsync(port: 0);
         var realServiceAddresses = realService.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>();
         var realServiceUrl = realServiceAddresses!.Addresses.First();
 
-        var tempDir = Path.Combine(Path.GetTempPath(), "typedmock_codegen_" + Guid.NewGuid().ToString("N"));
-        var targetFilePath = Path.Combine(tempDir, "GeneratedStubs", "WeatherApiStubController.cs");
+        var testsDir = GetTestsProjectDirectory();
+        var targetFilePath = Path.Combine(testsDir, "GeneratedStubs", "WeatherApiStubController.cs");
 
-        try
+        await using var mockServer = new TypedMockServer(new TypedMockOptions
         {
-            await using var mockServer = new TypedMockServer(new TypedMockOptions
-            {
-                Mode = MockMode.Record,
-                TargetUrl = realServiceUrl
-            });
-            mockServer.RegisterContract<IWeatherApi>();
-            await mockServer.StartAsync();
+            Mode = MockMode.Record,
+            TargetUrl = realServiceUrl
+        });
+        mockServer.RegisterContract<IWeatherApi>();
+        await mockServer.StartAsync();
 
-            var client = RestClient.For<IWeatherApi>(mockServer.BaseUrl);
-            await client.GetForecastsAsync();
-            await client.GetForecastByCityAsync("London");
-
-            // 2. Act: Save generated C# source code to file (in a nested directory that doesn't exist yet)
-            var returnedCode = await mockServer.SaveStubSourceCodeAsync<IWeatherApi>(targetFilePath);
-
-            // 3. Assert: File was created on disk and matches the returned source
-            File.Exists(targetFilePath).Should().BeTrue("SaveStubSourceCodeAsync should create the output file on disk");
-            var diskContent = await File.ReadAllTextAsync(targetFilePath);
-            diskContent.Should().Be(returnedCode);
-            diskContent.Should().Contain("public partial class WeatherApiStubController : ControllerBase, IWeatherApi");
-            diskContent.Should().Contain("\"london\" =>");
-
-            // 4. Assert: File content compiles cleanly in-memory
-            var assembly = CompileSourceToAssembly(diskContent);
-            var controllerType = assembly.GetType("Generated.Stubs.WeatherApiStubController");
-            controllerType.Should().NotBeNull();
-            typeof(IWeatherApi).IsAssignableFrom(controllerType).Should().BeTrue();
-        }
-        finally
+        var client = RestClient.For<IWeatherApi>(mockServer.BaseUrl);
+        await client.GetForecastsAsync();
+        await client.GetForecastByCityAsync("London");
+        await client.GetForecastByCityAsync("Paris");
+        await client.CreateForecastAsync(new CreateForecastRequest
         {
-            if (Directory.Exists(tempDir))
+            City = "Berlin",
+            TemperatureC = 23,
+            Summary = "Sunny and clear"
+        });
+
+        // 2. Act: Save generated C# source code directly to the tests/TypedMock.Tests/GeneratedStubs folder
+        var returnedCode = await mockServer.SaveStubSourceCodeAsync<IWeatherApi>(targetFilePath);
+
+        // 3. Assert: File exists on disk in the tests directory
+        File.Exists(targetFilePath).Should().BeTrue("WeatherApiStubController.cs should be saved in tests/TypedMock.Tests/GeneratedStubs");
+        var diskContent = await File.ReadAllTextAsync(targetFilePath);
+        diskContent.Should().Be(returnedCode);
+        diskContent.Should().Contain("public partial class WeatherApiStubController : ControllerBase, IWeatherApi");
+        diskContent.Should().Contain("\"london\" =>");
+        diskContent.Should().Contain("\"paris\" =>");
+
+        // 4. Assert: File compiles cleanly in-memory as well
+        var assembly = CompileSourceToAssembly(diskContent);
+        var controllerType = assembly.GetType("Generated.Stubs.WeatherApiStubController");
+        controllerType.Should().NotBeNull();
+        typeof(IWeatherApi).IsAssignableFrom(controllerType).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Test8_PrecompiledGeneratedStub_InTestsFolder_RunsDirectlyWithoutRoslyn()
+    {
+        // The controller saved in tests/TypedMock.Tests/GeneratedStubs/ compiles as part of this project.
+        // We can run it directly over HTTP without needing in-memory dynamic Roslyn compilation.
+        await using var stubHost = await StubServerHost.StartAsync<Generated.Stubs.WeatherApiStubController>(port: 0);
+        var stubUrl = StubServerHost.GetServerUrl(stubHost);
+        var client = RestClient.For<IWeatherApi>(stubUrl);
+
+        var london = await client.GetForecastByCityAsync("London");
+        london.City.Should().Be("London");
+        london.TemperatureC.Should().Be(12);
+
+        var paris = await client.GetForecastByCityAsync("Paris");
+        paris.City.Should().Be("Paris");
+        paris.TemperatureC.Should().Be(18);
+
+        var all = await client.GetForecastsAsync();
+        all.Should().HaveCount(3);
+    }
+
+    private static string GetTestsProjectDirectory()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "MockingProxyProofOfConcept.slnx")) ||
+                File.Exists(Path.Combine(dir.FullName, "MockingProxyProofOfConcept.sln")))
             {
-                Directory.Delete(tempDir, recursive: true);
+                return Path.Combine(dir.FullName, "tests", "TypedMock.Tests");
             }
+            dir = dir.Parent;
         }
+
+        return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", ".."));
     }
 
     private static Assembly CompileSourceToAssembly(string sourceCode, params string[] additionalSources)
