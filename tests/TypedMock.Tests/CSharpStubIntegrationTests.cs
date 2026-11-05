@@ -304,6 +304,56 @@ public class CSharpStubIntegrationTests
             .WithMessage("*must inherit from ControllerBase*");
     }
 
+    [Fact]
+    public async Task Test7_SaveStubSourceCodeAsync_WritesValidCompilableSourceToFileOnDisk()
+    {
+        // 1. Arrange: Record real traffic through the mock proxy
+        await using var realService = await SampleExternalService.Program.StartServerAsync(port: 0);
+        var realServiceAddresses = realService.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>();
+        var realServiceUrl = realServiceAddresses!.Addresses.First();
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "typedmock_codegen_" + Guid.NewGuid().ToString("N"));
+        var targetFilePath = Path.Combine(tempDir, "GeneratedStubs", "WeatherApiStubController.cs");
+
+        try
+        {
+            await using var mockServer = new TypedMockServer(new TypedMockOptions
+            {
+                Mode = MockMode.Record,
+                TargetUrl = realServiceUrl
+            });
+            mockServer.RegisterContract<IWeatherApi>();
+            await mockServer.StartAsync();
+
+            var client = RestClient.For<IWeatherApi>(mockServer.BaseUrl);
+            await client.GetForecastsAsync();
+            await client.GetForecastByCityAsync("London");
+
+            // 2. Act: Save generated C# source code to file (in a nested directory that doesn't exist yet)
+            var returnedCode = await mockServer.SaveStubSourceCodeAsync<IWeatherApi>(targetFilePath);
+
+            // 3. Assert: File was created on disk and matches the returned source
+            File.Exists(targetFilePath).Should().BeTrue("SaveStubSourceCodeAsync should create the output file on disk");
+            var diskContent = await File.ReadAllTextAsync(targetFilePath);
+            diskContent.Should().Be(returnedCode);
+            diskContent.Should().Contain("public partial class WeatherApiStubController : ControllerBase, IWeatherApi");
+            diskContent.Should().Contain("\"london\" =>");
+
+            // 4. Assert: File content compiles cleanly in-memory
+            var assembly = CompileSourceToAssembly(diskContent);
+            var controllerType = assembly.GetType("Generated.Stubs.WeatherApiStubController");
+            controllerType.Should().NotBeNull();
+            typeof(IWeatherApi).IsAssignableFrom(controllerType).Should().BeTrue();
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
     private static Assembly CompileSourceToAssembly(string sourceCode, params string[] additionalSources)
     {
         var syntaxTrees = new List<SyntaxTree>
