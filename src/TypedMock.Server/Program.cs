@@ -9,7 +9,11 @@ Console.WriteLine("==================================================");
 var modeStr = GetArg(args, "--mode") ?? "Replay";
 var portStr = GetArg(args, "--port") ?? "5050";
 var targetUrl = GetArg(args, "--target");
-var outStubs = GetArg(args, "--out-stubs") ?? Path.Combine(AppContext.BaseDirectory, "GeneratedStubs", "WeatherApiStubController.cs");
+var upstreamsArg = GetArg(args, "--upstreams");
+var outDir = GetArg(args, "--out-dir") ?? Path.Combine(AppContext.BaseDirectory, "GeneratedStubs");
+var outStubs = GetArg(args, "--out-stubs");
+var contractsFile = GetArg(args, "--contracts");
+var contractsDir = GetArg(args, "--contracts-dir");
 
 if (!Enum.TryParse<MockMode>(modeStr, true, out var mode))
 {
@@ -23,19 +27,62 @@ var options = new TypedMockOptions
     Mode = mode,
     Port = port,
     TargetUrl = targetUrl,
-    OutputStubPath = Path.GetFullPath(outStubs)
+    OutputDirectory = Path.GetFullPath(outDir),
+    OutputStubPath = outStubs != null ? Path.GetFullPath(outStubs) : null
 };
+
+// Parse multi-upstream table (e.g. "IWeatherApi=http://localhost:5001,IPaymentApi=http://localhost:5002")
+if (!string.IsNullOrWhiteSpace(upstreamsArg))
+{
+    var pairs = upstreamsArg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    foreach (var pair in pairs)
+    {
+        var eqIndex = pair.IndexOf('=');
+        if (eqIndex > 0)
+        {
+            var key = pair[..eqIndex].Trim();
+            var val = pair[(eqIndex + 1)..].Trim();
+            options.Upstreams[key] = val;
+        }
+    }
+}
 
 Console.WriteLine($"[Config] Mode:              {options.Mode}");
 Console.WriteLine($"[Config] Port:              {options.Port}");
-Console.WriteLine($"[Config] Target (upstream): {options.TargetUrl ?? "(none)"}");
-Console.WriteLine($"[Config] Output C# Stubs:   {options.OutputStubPath}");
+Console.WriteLine($"[Config] Default Upstream:  {options.TargetUrl ?? "(none)"}");
+if (options.Upstreams.Count > 0)
+{
+    Console.WriteLine("[Config] Upstream Map:");
+    foreach (var (contract, url) in options.Upstreams)
+    {
+        Console.WriteLine($"           - {contract} -> {url}");
+    }
+}
+Console.WriteLine($"[Config] Output Directory:  {options.OutputDirectory}");
 Console.WriteLine();
 
 var server = new TypedMockServer(options);
 
-// Register contracts from NuGet
-server.RegisterContract<IWeatherApi>();
+// Dynamic Contract Discovery
+var contractsLoadedCount = 0;
+if (!string.IsNullOrWhiteSpace(contractsFile) && File.Exists(contractsFile))
+{
+    Console.WriteLine($"[Discovery] Loading contracts from assembly: {contractsFile}");
+    server.RegisterContractsFromAssembly(contractsFile);
+    contractsLoadedCount = server.RegisteredEndpoints.Select(e => e.InterfaceType).Distinct().Count();
+}
+else if (!string.IsNullOrWhiteSpace(contractsDir) && Directory.Exists(contractsDir))
+{
+    Console.WriteLine($"[Discovery] Scanning contracts directory: {contractsDir}");
+    server.RegisterContractsFromDirectory(contractsDir);
+    contractsLoadedCount = server.RegisteredEndpoints.Select(e => e.InterfaceType).Distinct().Count();
+}
+
+// Fallback for standalone demo run if no external assemblies provided
+if (contractsLoadedCount == 0)
+{
+    server.RegisterContract<IWeatherApi>();
+}
 
 await server.StartAsync();
 
@@ -43,13 +90,20 @@ Console.WriteLine($"[Status] TypedMock Server running at: {server.BaseUrl}");
 Console.WriteLine($"[Status] Diagnostic Endpoint:        {server.BaseUrl}/__typedmock/status");
 Console.WriteLine();
 Console.WriteLine("Registered Contracts & Endpoints:");
-Console.WriteLine("  - IWeatherApi (RestEase)");
-Console.WriteLine("      * GET  /weatherforecast");
-Console.WriteLine("      * GET  /weatherforecast/{city}");
-Console.WriteLine("      * POST /weatherforecast");
+var registeredInterfaces = server.RegisteredEndpoints.Select(e => e.InterfaceType).Distinct();
+foreach (var iface in registeredInterfaces)
+{
+    Console.WriteLine($"  - {iface.Name} ({iface.Namespace})");
+    var endpoints = server.RegisteredEndpoints.Where(e => e.InterfaceType == iface);
+    foreach (var ep in endpoints)
+    {
+        Console.WriteLine($"      * {ep.HttpMethod.Method,-6} {ep.PathTemplate}");
+    }
+}
+
 Console.WriteLine();
 Console.WriteLine("Usage Tips:");
-Console.WriteLine("  * When --mode=Record, calls forward to --target and generate strongly-typed C# stub controllers.");
+Console.WriteLine("  * When --mode=Record, calls forward to their upstream and generate strongly-typed C# stub controllers.");
 Console.WriteLine("  * When --mode=Replay, responses are verified against RestEase DTO schemas.");
 Console.WriteLine();
 Console.WriteLine("Press Ctrl+C to stop.");
@@ -72,7 +126,7 @@ catch (OperationCanceledException)
 finally
 {
     await server.StopAsync();
-    Console.WriteLine($"[Status] TypedMock Server stopped. Stubs saved to: {options.OutputStubPath}");
+    Console.WriteLine($"[Status] TypedMock Server stopped. Stubs saved to: {options.OutputDirectory}");
 }
 
 static string? GetArg(string[] args, string name)

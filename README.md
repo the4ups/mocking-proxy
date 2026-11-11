@@ -98,20 +98,32 @@ The test suite validates:
 - **Scenario 6:** Recording and replaying POST requests with body payloads.
 - **C# Stub Code Generation:** Recording real traffic to emit strongly-typed ASP.NET Core controllers, in-memory Roslyn compilation, remote HTTP hosting via `StubServerHost`, manual subclass scenario overriding, compile-time contract drift detection (`CS0535`), deterministic request body pattern matching, and deduplication of repeated calls.
 
+- **Dynamic Contract Discovery & Multi-Upstream:** Loading contracts at runtime from external assembly DLLs without compile-time references (`DynamicContractLoader`), routing multiple distinct contracts to independent external services, and batch-saving separate C# controllers via `SaveAllStubsAsync`.
+
 ### 2. Run the Standalone Server on a Test Stand
 
-#### Replay Mode (Default Mocking Stand):
+#### Replay Mode:
 ```bash
-dotnet run --project src/TypedMock.Server -- --mode=Replay --port=5050 --fixtures=./fixtures
+dotnet run --project src/TypedMock.Server -- --mode=Replay --port=5050
 ```
 
-#### Record Mode (Interception Proxy):
+#### Record Mode (Single Upstream):
 ```bash
-dotnet run --project src/TypedMock.Server -- --mode=Record --port=5050 --target=http://real-service:5001 --fixtures=./fixtures
+dotnet run --project src/TypedMock.Server -- --mode=Record --port=5050 --target=http://real-service:5001 --out-dir=./GeneratedStubs
+```
+
+#### Record Mode (Multi-Upstream + Dynamic Contract Discovery):
+```bash
+dotnet run --project src/TypedMock.Server -- \
+  --mode=Record \
+  --port=5050 \
+  --contracts-dir=./contracts \
+  --upstreams="IWeatherApi=http://weather-service:5001,IPaymentApi=http://payment-service:5002" \
+  --out-dir=./GeneratedStubs
 ```
 
 #### Diagnostic Endpoint:
-Open `http://localhost:5050/__typedmock/status` to view registered contracts, endpoints, active mode, and loaded fixtures.
+Open `http://localhost:5050/__typedmock/status` to view registered contracts, endpoints, active mode, and multi-upstream routing table.
 
 ---
 

@@ -38,6 +38,7 @@ public class TypedMockServer : IAsyncDisposable
     public string BaseUrl => _baseUrl ?? throw new InvalidOperationException("Server has not been started yet.");
     public MockMode Mode => _options.Mode;
     public IReadOnlyList<RecordedInteraction> RecordedInteractions => _forwarder?.RecordedInteractions ?? [];
+    public IReadOnlyList<ContractEndpoint> RegisteredEndpoints => _registeredEndpoints.AsReadOnly();
 
     public string GenerateStubSourceCode<TContract>(CSharpStubGeneratorOptions? options = null) where TContract : class
     {
@@ -66,6 +67,56 @@ public class TypedMockServer : IAsyncDisposable
         return code;
     }
 
+    /// <summary>
+    /// Generates and saves separate C# stub controllers for every recorded contract into the specified directory.
+    /// E.g. outputDirectory/WeatherApiStubController.cs, outputDirectory/PaymentApiStubController.cs
+    /// </summary>
+    public async Task<IReadOnlyList<string>> SaveAllStubsAsync(string outputDirectory, CSharpStubGeneratorOptions? baseOptions = null)
+    {
+        if (!Directory.Exists(outputDirectory))
+        {
+            Directory.CreateDirectory(outputDirectory);
+        }
+
+        var savedFiles = new List<string>();
+        var recordedContracts = RecordedInteractions
+            .Select(i => i.Endpoint.InterfaceType)
+            .Distinct()
+            .ToList();
+
+        // If no interactions were recorded yet, generate stubs for all registered contracts
+        if (recordedContracts.Count == 0)
+        {
+            recordedContracts = _registeredEndpoints
+                .Select(e => e.InterfaceType)
+                .Distinct()
+                .ToList();
+        }
+
+        foreach (var contractType in recordedContracts)
+        {
+            var options = baseOptions ?? new CSharpStubGeneratorOptions();
+            var className = contractType.Name.StartsWith('I') && contractType.Name.Length > 1
+                ? contractType.Name[1..] + "StubController"
+                : contractType.Name + "StubController";
+
+            var filePath = Path.Combine(outputDirectory, $"{className}.cs");
+            var code = CSharpStubGenerator.Generate(contractType, RecordedInteractions, new CSharpStubGeneratorOptions
+            {
+                Namespace = options.Namespace,
+                ClassName = className,
+                IncludeControllerAttributes = options.IncludeControllerAttributes,
+                IncludeExtensibilityHooks = options.IncludeExtensibilityHooks,
+                IsAbstract = options.IsAbstract
+            });
+
+            await File.WriteAllTextAsync(filePath, code);
+            savedFiles.Add(filePath);
+        }
+
+        return savedFiles;
+    }
+
     public TypedMockServer RegisterContract<TInterface>() where TInterface : class
     {
         return RegisterContract(typeof(TInterface));
@@ -81,6 +132,27 @@ public class TypedMockServer : IAsyncDisposable
         var endpoints = RestEaseContractScanner.Scan(interfaceType);
         _registeredEndpoints.AddRange(endpoints);
         return this;
+    }
+
+    public TypedMockServer RegisterContracts(IEnumerable<Type> interfaceTypes)
+    {
+        foreach (var contract in interfaceTypes)
+        {
+            RegisterContract(contract);
+        }
+        return this;
+    }
+
+    public TypedMockServer RegisterContractsFromAssembly(string assemblyPath)
+    {
+        var contracts = DynamicContractLoader.LoadContractsFromAssembly(assemblyPath);
+        return RegisterContracts(contracts);
+    }
+
+    public TypedMockServer RegisterContractsFromDirectory(string directoryPath)
+    {
+        var contracts = DynamicContractLoader.LoadContractsFromDirectory(directoryPath);
+        return RegisterContracts(contracts);
     }
 
     public ContractMockSetup<TInterface> For<TInterface>() where TInterface : class
@@ -115,7 +187,13 @@ public class TypedMockServer : IAsyncDisposable
 
     public async Task StopAsync()
     {
-        if (!string.IsNullOrWhiteSpace(_options.OutputStubPath) && RecordedInteractions.Count > 0)
+        // Batch auto-save to directory if specified
+        if (!string.IsNullOrWhiteSpace(_options.OutputDirectory) && RecordedInteractions.Count > 0)
+        {
+            await SaveAllStubsAsync(_options.OutputDirectory);
+        }
+        // Single file auto-save if specified
+        else if (!string.IsNullOrWhiteSpace(_options.OutputStubPath) && RecordedInteractions.Count > 0)
         {
             var primaryContract = _registeredEndpoints.Select(e => e.InterfaceType).Distinct().FirstOrDefault();
             if (primaryContract != null)
@@ -144,15 +222,18 @@ public class TypedMockServer : IAsyncDisposable
         var path = context.Request.Path.Value ?? "/";
         var method = context.Request.Method;
 
-        // Admin Endpoints
+        // Admin Diagnostic Endpoints
         if (path.StartsWith("/__typedmock/status", StringComparison.OrdinalIgnoreCase))
         {
             await context.Response.WriteAsJsonAsync(new
             {
                 status = "Running",
                 mode = _options.Mode.ToString(),
-                targetUrl = _options.TargetUrl,
+                defaultTargetUrl = _options.TargetUrl,
+                upstreams = _options.Upstreams,
+                outputDirectory = _options.OutputDirectory,
                 outputStubPath = _options.OutputStubPath,
+                registeredContracts = _registeredEndpoints.Select(e => e.InterfaceType.Name).Distinct().ToList(),
                 registeredEndpoints = _registeredEndpoints.Select(e => e.ToString()).ToList(),
                 recordedInteractionsCount = RecordedInteractions.Count
             });
@@ -187,16 +268,23 @@ public class TypedMockServer : IAsyncDisposable
         // Mode Execution: Record Mode
         if (_options.Mode == MockMode.Record)
         {
-            if (string.IsNullOrEmpty(_options.TargetUrl))
+            var targetUrl = matchedEndpoint != null
+                ? _options.ResolveTargetUrl(matchedEndpoint.InterfaceType.Name)
+                : _options.TargetUrl;
+
+            if (string.IsNullOrEmpty(targetUrl))
             {
                 context.Response.StatusCode = StatusCodes.Status500InternalServerError;
-                await context.Response.WriteAsJsonAsync(new { error = "TargetUrl must be configured in Record mode." });
+                var errDetail = matchedEndpoint != null
+                    ? $"No upstream TargetUrl configured for contract '{matchedEndpoint.InterfaceType.Name}'."
+                    : "No default TargetUrl configured.";
+                await context.Response.WriteAsJsonAsync(new { error = errDetail, hint = "Specify TargetUrl or map contract in Upstreams dictionary." });
                 return;
             }
 
             await _forwarder!.ForwardAndRecordAsync(
                 context,
-                new Uri(_options.TargetUrl),
+                new Uri(targetUrl),
                 matchedEndpoint,
                 pathParams,
                 scenarioName);
@@ -227,15 +315,22 @@ public class TypedMockServer : IAsyncDisposable
         }
 
         // 2. Fallback for Hybrid mode
-        if (_options.Mode == MockMode.Hybrid && !string.IsNullOrEmpty(_options.TargetUrl))
+        if (_options.Mode == MockMode.Hybrid)
         {
-            var forwarded = await _forwarder!.ForwardAndRecordAsync(
-                context,
-                new Uri(_options.TargetUrl),
-                matchedEndpoint,
-                pathParams,
-                scenarioName);
-            if (forwarded) return;
+            var targetUrl = matchedEndpoint != null
+                ? _options.ResolveTargetUrl(matchedEndpoint.InterfaceType.Name)
+                : _options.TargetUrl;
+
+            if (!string.IsNullOrEmpty(targetUrl))
+            {
+                var forwarded = await _forwarder!.ForwardAndRecordAsync(
+                    context,
+                    new Uri(targetUrl),
+                    matchedEndpoint,
+                    pathParams,
+                    scenarioName);
+                if (forwarded) return;
+            }
         }
 
         // Unmatched request

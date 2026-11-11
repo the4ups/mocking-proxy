@@ -29,7 +29,10 @@ dotnet format --verify-no-changes
 dotnet run --project src/TypedMock.Server -- --mode=Replay --port=5050
 
 # Run Standalone Mock Proxy (Record mode, upstream target required, saves C# stub controller on exit)
-dotnet run --project src/TypedMock.Server -- --mode=Record --port=5050 --target=http://localhost:5001 --out-stubs=./GeneratedStubs/WeatherApiStubController.cs
+dotnet run --project src/TypedMock.Server -- --mode=Record --port=5050 --target=http://localhost:5001 --out-dir=./GeneratedStubs
+
+# Run Standalone Mock Proxy (Multi-Upstream + Dynamic Contract Discovery from assemblies)
+dotnet run --project src/TypedMock.Server -- --mode=Record --port=5050 --contracts-dir=./contracts --upstreams="IWeatherApi=http://localhost:5001,IPaymentApi=http://localhost:5002" --out-dir=./GeneratedStubs
 
 # Run Sample External Service (Upstream dependency)
 dotnet run --project src/SampleExternalService -- 5001
@@ -43,9 +46,10 @@ dotnet run --project src/SampleClientApp -- http://localhost:5050
 - `src/ExternalService.Contracts`: Shared interface library (`IWeatherApi`, DTOs). In real use, this represents the external team's published NuGet contract.
 - `src/TypedMock.Core`: Core engine library.
   - Hosts an embedded Kestrel server (`TypedMockServer`).
-  - Scans RestEase contract interfaces via `RestEaseContractScanner` (`[Get]`, `[Post]`, `[Path]`, `[Body]`, `[Query]`, `[Header]`).
-  - Modes: `Replay` (local fixtures / programmatic rules), `Record` (reverse proxy to upstream + save typed fixtures), `Hybrid` (replay if matched, fallback to upstream proxy).
-  - Enforces schema safety: validates that fixture JSON response bodies deserialize into contract DTO return types at runtime; throws `ContractValidationException` on schema drift.
+  - Scans RestEase contract interfaces via `RestEaseContractScanner` or dynamically in runtime via `DynamicContractLoader` from external assemblies (`.dll`) or directories without compile-time references.
+  - Multi-Upstream proxying: dispatches distinct contract routes to independent upstream services and batch-generates separate controllers via `SaveAllStubsAsync`.
+  - Modes: `Replay` (programmatic rules / hosted stubs), `Record` (reverse proxy to upstream + in-memory typing), `Hybrid` (replay if matched, fallback to upstream proxy).
+  - Enforces schema safety: validates that HTTP response bodies deserialize into contract DTO return types at runtime; throws `ContractValidationException` on schema drift.
   - C# Code Generation: `CSharpStubGenerator`, `CSharpValueEmitter`, and `StubServerHost` to record upstream traffic into version-controlled ASP.NET Core controllers with deterministic request pattern-matching (Path/Query/Body DTO properties), deduplication of repeated calls, scenario hooks, and compile-time drift detection.
   - Language-Agnostic Contracts: Designed to source contracts either from C# NuGet interfaces (RestEase/Refit) or OpenAPI/Swagger schemas.
 - `src/TypedMock.Server`: Standalone CLI host for test stands / containers. Exposes diagnostic health status at `/__typedmock/status`.

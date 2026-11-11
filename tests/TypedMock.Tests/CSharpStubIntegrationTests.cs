@@ -1,6 +1,8 @@
 using System.Reflection;
 using ExternalService.Contracts;
 using FluentAssertions;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.CodeAnalysis;
@@ -445,6 +447,129 @@ public class CSharpStubIntegrationTests
         var act = () => client.CreateForecastAsync(reqUnrecorded);
         await act.Should().ThrowAsync<ApiException>()
             .Where(ex => ex.StatusCode == System.Net.HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public void Test10_DynamicContractDiscovery_LoadsContractsFromExternalAssemblyAtRuntime()
+    {
+        // 1. Arrange: Locate compiled contracts assembly on disk
+        var contractsAssemblyPath = typeof(IWeatherApi).Assembly.Location;
+        File.Exists(contractsAssemblyPath).Should().BeTrue();
+
+        // 2. Act: Discover contracts dynamically using DynamicContractLoader
+        var discoveredContracts = TypedMock.Core.Contracts.DynamicContractLoader.LoadContractsFromAssembly(contractsAssemblyPath);
+
+        // 3. Assert: All interfaces decorated with RestEase attributes are discovered
+        discoveredContracts.Should().Contain(typeof(IWeatherApi));
+        discoveredContracts.Should().Contain(typeof(IPaymentApi));
+
+        // Register contracts dynamically into a new mock server without compile-time generic types
+        var mockServer = new TypedMockServer();
+        mockServer.RegisterContractsFromAssembly(contractsAssemblyPath);
+
+        mockServer.RegisteredEndpoints.Should().Contain(e => e.InterfaceType.Name == nameof(IWeatherApi));
+        mockServer.RegisteredEndpoints.Should().Contain(e => e.InterfaceType.Name == nameof(IPaymentApi));
+    }
+
+    [Fact]
+    public async Task Test11_MultiUpstreamRouting_DispatchesDistinctServices_AndSavesMultipleControllers()
+    {
+        // 1. Arrange: Start Upstream 1 (Weather Service)
+        await using var realWeatherService = await SampleExternalService.Program.StartServerAsync(port: 0);
+        var weatherAddresses = realWeatherService.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>();
+        var weatherUrl = weatherAddresses!.Addresses.First();
+
+        // 2. Arrange: Start Upstream 2 (Payment Service)
+        var paymentBuilder = Microsoft.AspNetCore.Builder.WebApplication.CreateEmptyBuilder(new Microsoft.AspNetCore.Builder.WebApplicationOptions());
+        paymentBuilder.Services.AddRouting();
+        paymentBuilder.WebHost.UseKestrel(k => k.Listen(System.Net.IPAddress.Loopback, 0));
+        var paymentApp = paymentBuilder.Build();
+        paymentApp.MapPost("/payments/charge", (PaymentRequestDto req) => Microsoft.AspNetCore.Http.Results.Ok(new PaymentResponseDto
+        {
+            TransactionId = "tx_abc_123",
+            Status = "Success",
+            Amount = req.Amount
+        }));
+        await paymentApp.StartAsync();
+
+        var paymentAddresses = paymentApp.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>();
+        var paymentUrl = paymentAddresses!.Addresses.First();
+
+        var tempBatchDir = Path.Combine(Path.GetTempPath(), "typedmock_multi_" + Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            // 3. Configure TypedMock with Multi-Upstream routing table
+            var mockOptions = new TypedMockOptions
+            {
+                Mode = MockMode.Record,
+                Upstreams =
+                {
+                    [nameof(IWeatherApi)] = weatherUrl,
+                    [nameof(IPaymentApi)] = paymentUrl
+                },
+                OutputDirectory = tempBatchDir
+            };
+
+            await using var mockServer = new TypedMockServer(mockOptions);
+            mockServer.RegisterContract<IWeatherApi>();
+            mockServer.RegisterContract<IPaymentApi>();
+            await mockServer.StartAsync();
+
+            // 4. Client calls both services through the single TypedMock proxy port
+            var weatherClient = RestClient.For<IWeatherApi>(mockServer.BaseUrl);
+            var london = await weatherClient.GetForecastByCityAsync("London");
+            london.City.Should().Be("London");
+
+            var paymentClient = RestClient.For<IPaymentApi>(mockServer.BaseUrl);
+            var paymentResult = await paymentClient.ChargeAsync(new PaymentRequestDto
+            {
+                OrderId = "order_1001",
+                Amount = 99.50m,
+                Currency = "USD"
+            });
+            paymentResult.TransactionId.Should().Be("tx_abc_123");
+            paymentResult.Status.Should().Be("Success");
+            paymentResult.Amount.Should().Be(99.50m);
+
+            // 5. Act: Batch save all recorded controllers into output directory
+            var savedFiles = await mockServer.SaveAllStubsAsync(tempBatchDir);
+
+            // 6. Assert: Two separate C# controller files are generated
+            savedFiles.Should().HaveCount(2);
+
+            var weatherStubFile = Path.Combine(tempBatchDir, "WeatherApiStubController.cs");
+            var paymentStubFile = Path.Combine(tempBatchDir, "PaymentApiStubController.cs");
+
+            File.Exists(weatherStubFile).Should().BeTrue();
+            File.Exists(paymentStubFile).Should().BeTrue();
+
+            var weatherCode = await File.ReadAllTextAsync(weatherStubFile);
+            weatherCode.Should().Contain("public partial class WeatherApiStubController : ControllerBase, IWeatherApi");
+            weatherCode.Should().Contain("\"london\" =>");
+
+            var paymentCode = await File.ReadAllTextAsync(paymentStubFile);
+            paymentCode.Should().Contain("public partial class PaymentApiStubController : ControllerBase, IPaymentApi");
+            paymentCode.Should().Contain("return request switch");
+            paymentCode.Should().Contain("OrderId: \"order_1001\"");
+
+            // Both controllers compile cleanly via Roslyn
+            var weatherAssembly = CompileSourceToAssembly(weatherCode);
+            weatherAssembly.GetType("Generated.Stubs.WeatherApiStubController").Should().NotBeNull();
+
+            var paymentAssembly = CompileSourceToAssembly(paymentCode);
+            paymentAssembly.GetType("Generated.Stubs.PaymentApiStubController").Should().NotBeNull();
+        }
+        finally
+        {
+            await paymentApp.StopAsync();
+            await paymentApp.DisposeAsync();
+
+            if (Directory.Exists(tempBatchDir))
+            {
+                Directory.Delete(tempBatchDir, true);
+            }
+        }
     }
 
     private static string GetTestsProjectDirectory()
