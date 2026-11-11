@@ -17,21 +17,16 @@ public class TypedMockOptions
     public string? TargetUrl { get; set; }
 
     /// <summary>
-    /// Multi-upstream routing table mapping contract interface names (or type names) to upstream target URLs.
+    /// Multi-upstream routing table mapping contract interface names to upstream target URLs.
     /// E.g. ["IWeatherApi"] = "http://weather-service:5001", ["IPaymentApi"] = "http://payment-service:5002"
     /// </summary>
     public Dictionary<string, string> Upstreams { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Target directory where generated C# stub controllers will be saved per contract.
-    /// E.g. "./GeneratedStubs" -> WeatherApiStubController.cs, PaymentApiStubController.cs
+    /// Target directory where generated C# stub controllers will be saved.
+    /// Defaults to "./GeneratedStubs".
     /// </summary>
-    public string? OutputDirectory { get; set; }
-
-    /// <summary>
-    /// Specific single file output path for generating a single stub controller.
-    /// </summary>
-    public string? OutputStubPath { get; set; }
+    public string OutputDirectory { get; set; } = Path.Combine(AppContext.BaseDirectory, "GeneratedStubs");
 
     public int Port { get; set; } = 0; // 0 = dynamic available port
     public string ScenarioHeader { get; set; } = "X-Mock-Scenario";

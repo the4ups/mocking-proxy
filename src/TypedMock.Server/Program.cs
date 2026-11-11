@@ -11,7 +11,6 @@ var portStr = GetArg(args, "--port") ?? "5050";
 var targetUrl = GetArg(args, "--target");
 var upstreamsArg = GetArg(args, "--upstreams");
 var outDir = GetArg(args, "--out-dir") ?? Path.Combine(AppContext.BaseDirectory, "GeneratedStubs");
-var outStubs = GetArg(args, "--out-stubs");
 var contractsFile = GetArg(args, "--contracts");
 var contractsDir = GetArg(args, "--contracts-dir");
 
@@ -27,8 +26,7 @@ var options = new TypedMockOptions
     Mode = mode,
     Port = port,
     TargetUrl = targetUrl,
-    OutputDirectory = Path.GetFullPath(outDir),
-    OutputStubPath = outStubs != null ? Path.GetFullPath(outStubs) : null
+    OutputDirectory = Path.GetFullPath(outDir)
 };
 
 // Parse multi-upstream table (e.g. "IWeatherApi=http://localhost:5001,IPaymentApi=http://localhost:5002")

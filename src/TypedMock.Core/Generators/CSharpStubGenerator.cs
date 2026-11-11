@@ -167,98 +167,41 @@ public static class CSharpStubGenerator
                         methodsSb.AppendLine($"        throw new StubHttpException({latest.StatusCode}, \"{CSharpValueEmitter.EscapeString(latest.ResponseBody ?? "Recorded error response")}\");");
                     }
                 }
-                else if (parameters.Length == 1)
+                else
                 {
-                    var p = parameters[0];
-                    var mapping = endpoint.Parameters.FirstOrDefault(m => m.ParameterName == p.Name);
-
-                    if (mapping?.Kind == ParameterKind.Body)
+                    string switchExpr;
+                    if (parameters.Length == 1)
                     {
-                        methodsSb.AppendLine($"        return {p.Name} switch");
-                        methodsSb.AppendLine("        {");
-
-                        var distinctCalls = methodCalls
-                            .GroupBy(c => c.DeserializedRequestBody != null
-                                ? CSharpValueEmitter.EmitPattern(c.DeserializedRequestBody, namespaces)
-                                : (c.RequestBody ?? "null"))
-                            .ToList();
-
-                        foreach (var group in distinctCalls)
-                        {
-                            var pattern = group.Key;
-                            var latest = group.Last();
-
-                            methodsSb.AppendLine($"            {pattern} =>");
-                            AppendInteractionBranch(methodsSb, latest, 16, namespaces);
-                        }
-
-                        methodsSb.AppendLine($"            _ => throw new StubNotFoundException($\"No recorded stub for {p.Name} '{{{p.Name}}}'.\")");
-                        methodsSb.AppendLine("        };");
-                    }
-                    else if (mapping?.Kind == ParameterKind.Query)
-                    {
-                        methodsSb.AppendLine($"        return ({p.Name}?.ToLowerInvariant()) switch");
-                        methodsSb.AppendLine("        {");
-
-                        var distinctCalls = methodCalls
-                            .GroupBy(c => c.QueryParameters.TryGetValue(mapping.TargetName, out var v) ? v.ToLowerInvariant() : "")
-                            .ToList();
-
-                        foreach (var group in distinctCalls)
-                        {
-                            var paramVal = group.Key;
-                            var latest = group.Last();
-
-                            methodsSb.AppendLine($"            \"{paramVal}\" =>");
-                            AppendInteractionBranch(methodsSb, latest, 16, namespaces);
-                        }
-
-                        methodsSb.AppendLine($"            _ => throw new StubNotFoundException($\"No recorded stub for {p.Name} '{{{p.Name}}}'.\")");
-                        methodsSb.AppendLine("        };");
+                        var p = parameters[0];
+                        switchExpr = p.ParameterType == typeof(string) ? $"({p.Name}?.ToLowerInvariant())" : p.Name!;
                     }
                     else
                     {
-                        var targetName = mapping?.TargetName ?? p.Name!;
-                        methodsSb.AppendLine($"        return ({p.Name}?.ToLowerInvariant()) switch");
-                        methodsSb.AppendLine("        {");
-
-                        var distinctCalls = methodCalls
-                            .GroupBy(c => c.PathParameters.TryGetValue(targetName, out var v) ? v.ToLowerInvariant() : "")
-                            .ToList();
-
-                        foreach (var group in distinctCalls)
-                        {
-                            var paramVal = group.Key;
-                            var latest = group.Last();
-
-                            methodsSb.AppendLine($"            \"{paramVal}\" =>");
-                            AppendInteractionBranch(methodsSb, latest, 16, namespaces);
-                        }
-
-                        methodsSb.AppendLine($"            _ => throw new StubNotFoundException($\"No recorded stub for {p.Name} '{{{p.Name}}}'.\")");
-                        methodsSb.AppendLine("        };");
+                        switchExpr = "(" + string.Join(", ", parameters.Select(p => p.ParameterType == typeof(string) ? $"{p.Name}?.ToLowerInvariant()" : p.Name!)) + ")";
                     }
-                }
-                else
-                {
-                    var tupleExpr = "(" + string.Join(", ", parameters.Select(p => p.ParameterType == typeof(string) ? $"{p.Name}?.ToLowerInvariant()" : p.Name)) + ")";
-                    methodsSb.AppendLine($"        return {tupleExpr} switch");
+
+                    methodsSb.AppendLine($"        return {switchExpr} switch");
                     methodsSb.AppendLine("        {");
 
                     var distinctCalls = methodCalls
-                        .GroupBy(c => BuildTuplePattern(c, method, endpoint, namespaces))
+                        .GroupBy(c => parameters.Length == 1
+                            ? BuildParameterPattern(c, parameters[0], endpoint, namespaces)
+                            : $"({string.Join(", ", parameters.Select(p => BuildParameterPattern(c, p, endpoint, namespaces)))})")
                         .ToList();
 
                     foreach (var group in distinctCalls)
                     {
-                        var tuplePattern = group.Key;
+                        var pattern = group.Key;
                         var latest = group.Last();
 
-                        methodsSb.AppendLine($"            {tuplePattern} =>");
+                        methodsSb.AppendLine($"            {pattern} =>");
                         AppendInteractionBranch(methodsSb, latest, 16, namespaces);
                     }
 
-                    methodsSb.AppendLine("            _ => throw new StubNotFoundException(\"No recorded stub matching the provided request parameters.\")");
+                    var notFoundMessage = parameters.Length == 1
+                        ? $"No recorded stub for {parameters[0].Name} '{{{parameters[0].Name}}}'."
+                        : "No recorded stub matching the provided request parameters.";
+                    methodsSb.AppendLine($"            _ => throw new StubNotFoundException($\"{notFoundMessage}\")");
                     methodsSb.AppendLine("        };");
                 }
             }
@@ -323,6 +266,37 @@ public static class CSharpStubGenerator
         return classSb.ToString();
     }
 
+    private static string BuildParameterPattern(
+        RecordedInteraction interaction,
+        ParameterInfo param,
+        ContractEndpoint endpoint,
+        ISet<string> namespaces)
+    {
+        var mapping = endpoint.Parameters.FirstOrDefault(m => m.ParameterName == param.Name);
+
+        if (mapping?.Kind == ParameterKind.Body)
+        {
+            return interaction.DeserializedRequestBody != null
+                ? CSharpValueEmitter.EmitPattern(interaction.DeserializedRequestBody, namespaces)
+                : (interaction.RequestBody ?? "_");
+        }
+
+        if (mapping?.Kind == ParameterKind.Query)
+        {
+            return interaction.QueryParameters.TryGetValue(mapping.TargetName, out var qVal)
+                ? $"\"{CSharpValueEmitter.EscapeString(qVal.ToLowerInvariant())}\""
+                : "_";
+        }
+
+        var targetName = mapping?.TargetName ?? param.Name!;
+        if (interaction.PathParameters.TryGetValue(targetName, out var pathVal))
+        {
+            return $"\"{CSharpValueEmitter.EscapeString(pathVal.ToLowerInvariant())}\"";
+        }
+
+        return "_";
+    }
+
     private static void AppendInteractionBranch(
         StringBuilder sb,
         RecordedInteraction latest,
@@ -339,59 +313,5 @@ public static class CSharpStubGenerator
         {
             sb.AppendLine($"{indent}throw new StubHttpException({latest.StatusCode}, \"{CSharpValueEmitter.EscapeString(latest.ResponseBody ?? "Recorded error response")}\"),");
         }
-    }
-
-    private static string BuildTuplePattern(
-        RecordedInteraction interaction,
-        MethodInfo method,
-        ContractEndpoint endpoint,
-        ISet<string> namespaces)
-    {
-        var elements = new List<string>();
-        foreach (var p in method.GetParameters())
-        {
-            var mapping = endpoint.Parameters.FirstOrDefault(m => m.ParameterName == p.Name);
-            if (mapping?.Kind == ParameterKind.Path)
-            {
-                var targetName = mapping.TargetName;
-                if (interaction.PathParameters.TryGetValue(targetName, out var v))
-                {
-                    elements.Add($"\"{CSharpValueEmitter.EscapeString(v.ToLowerInvariant())}\"");
-                }
-                else
-                {
-                    elements.Add("_");
-                }
-            }
-            else if (mapping?.Kind == ParameterKind.Query)
-            {
-                var targetName = mapping.TargetName;
-                if (interaction.QueryParameters.TryGetValue(targetName, out var v))
-                {
-                    elements.Add($"\"{CSharpValueEmitter.EscapeString(v.ToLowerInvariant())}\"");
-                }
-                else
-                {
-                    elements.Add("_");
-                }
-            }
-            else if (mapping?.Kind == ParameterKind.Body)
-            {
-                if (interaction.DeserializedRequestBody != null)
-                {
-                    elements.Add(CSharpValueEmitter.EmitPattern(interaction.DeserializedRequestBody, namespaces));
-                }
-                else
-                {
-                    elements.Add("_");
-                }
-            }
-            else
-            {
-                elements.Add("_");
-            }
-        }
-
-        return $"({string.Join(", ", elements)})";
     }
 }

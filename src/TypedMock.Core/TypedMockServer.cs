@@ -187,19 +187,9 @@ public class TypedMockServer : IAsyncDisposable
 
     public async Task StopAsync()
     {
-        // Batch auto-save to directory if specified
         if (!string.IsNullOrWhiteSpace(_options.OutputDirectory) && RecordedInteractions.Count > 0)
         {
             await SaveAllStubsAsync(_options.OutputDirectory);
-        }
-        // Single file auto-save if specified
-        else if (!string.IsNullOrWhiteSpace(_options.OutputStubPath) && RecordedInteractions.Count > 0)
-        {
-            var primaryContract = _registeredEndpoints.Select(e => e.InterfaceType).Distinct().FirstOrDefault();
-            if (primaryContract != null)
-            {
-                await SaveStubSourceCodeAsync(primaryContract, _options.OutputStubPath);
-            }
         }
 
         if (_app != null)
@@ -232,7 +222,6 @@ public class TypedMockServer : IAsyncDisposable
                 defaultTargetUrl = _options.TargetUrl,
                 upstreams = _options.Upstreams,
                 outputDirectory = _options.OutputDirectory,
-                outputStubPath = _options.OutputStubPath,
                 registeredContracts = _registeredEndpoints.Select(e => e.InterfaceType.Name).Distinct().ToList(),
                 registeredEndpoints = _registeredEndpoints.Select(e => e.ToString()).ToList(),
                 recordedInteractionsCount = RecordedInteractions.Count
