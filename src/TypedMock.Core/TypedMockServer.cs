@@ -1,7 +1,5 @@
 using System.Net;
 using System.Reflection;
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -9,7 +7,6 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using TypedMock.Core.Contracts;
-using TypedMock.Core.Fixtures;
 using TypedMock.Core.Generators;
 using TypedMock.Core.Matching;
 using TypedMock.Core.Models;
@@ -28,7 +25,6 @@ public class TypedMockServer : IAsyncDisposable
     private readonly TypedMockOptions _options;
     private readonly List<ContractEndpoint> _registeredEndpoints = [];
     private readonly List<ProgrammaticMockRule> _programmaticRules = [];
-    private readonly TypedFixtureStore _fixtureStore = new();
     private readonly HttpClient _upstreamClient = new(SharedHandler, disposeHandler: false);
     private HttpProxyForwarder? _forwarder;
     private WebApplication? _app;
@@ -41,17 +37,26 @@ public class TypedMockServer : IAsyncDisposable
 
     public string BaseUrl => _baseUrl ?? throw new InvalidOperationException("Server has not been started yet.");
     public MockMode Mode => _options.Mode;
-    public TypedFixtureStore FixtureStore => _fixtureStore;
     public IReadOnlyList<RecordedInteraction> RecordedInteractions => _forwarder?.RecordedInteractions ?? [];
 
     public string GenerateStubSourceCode<TContract>(CSharpStubGeneratorOptions? options = null) where TContract : class
     {
-        return CSharpStubGenerator.Generate<TContract>(RecordedInteractions, options);
+        return GenerateStubSourceCode(typeof(TContract), options);
+    }
+
+    public string GenerateStubSourceCode(Type contractType, CSharpStubGeneratorOptions? options = null)
+    {
+        return CSharpStubGenerator.Generate(contractType, RecordedInteractions, options);
     }
 
     public async Task<string> SaveStubSourceCodeAsync<TContract>(string outputPath, CSharpStubGeneratorOptions? options = null) where TContract : class
     {
-        var code = GenerateStubSourceCode<TContract>(options);
+        return await SaveStubSourceCodeAsync(typeof(TContract), outputPath, options);
+    }
+
+    public async Task<string> SaveStubSourceCodeAsync(Type contractType, string outputPath, CSharpStubGeneratorOptions? options = null)
+    {
+        var code = GenerateStubSourceCode(contractType, options);
         var dir = Path.GetDirectoryName(outputPath);
         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
         {
@@ -86,8 +91,7 @@ public class TypedMockServer : IAsyncDisposable
 
     public async Task StartAsync()
     {
-        _fixtureStore.LoadFromDirectory(_options.FixturesDirectory);
-        _forwarder = new HttpProxyForwarder(_upstreamClient, _fixtureStore);
+        _forwarder = new HttpProxyForwarder(_upstreamClient);
 
         var builder = WebApplication.CreateEmptyBuilder(new WebApplicationOptions
         {
@@ -111,6 +115,15 @@ public class TypedMockServer : IAsyncDisposable
 
     public async Task StopAsync()
     {
+        if (!string.IsNullOrWhiteSpace(_options.OutputStubPath) && RecordedInteractions.Count > 0)
+        {
+            var primaryContract = _registeredEndpoints.Select(e => e.InterfaceType).Distinct().FirstOrDefault();
+            if (primaryContract != null)
+            {
+                await SaveStubSourceCodeAsync(primaryContract, _options.OutputStubPath);
+            }
+        }
+
         if (_app != null)
         {
             await _app.StopAsync();
@@ -139,9 +152,9 @@ public class TypedMockServer : IAsyncDisposable
                 status = "Running",
                 mode = _options.Mode.ToString(),
                 targetUrl = _options.TargetUrl,
+                outputStubPath = _options.OutputStubPath,
                 registeredEndpoints = _registeredEndpoints.Select(e => e.ToString()).ToList(),
-                fixturesCount = _fixtureStore.AllFixtures.Count,
-                fixtures = _fixtureStore.AllFixtures.Select(f => $"{f.Contract}.{f.Method} [{f.Scenario}]").ToList()
+                recordedInteractionsCount = RecordedInteractions.Count
             });
             return;
         }
@@ -186,7 +199,6 @@ public class TypedMockServer : IAsyncDisposable
                 new Uri(_options.TargetUrl),
                 matchedEndpoint,
                 pathParams,
-                _options.FixturesDirectory,
                 scenarioName);
             return;
         }
@@ -212,42 +224,9 @@ public class TypedMockServer : IAsyncDisposable
                 }
                 return;
             }
-
-            // 2. Check Fixtures
-            var fixture = _fixtureStore.FindBestMatch(
-                matchedEndpoint.InterfaceType.Name,
-                matchedEndpoint.Method.Name,
-                scenarioName,
-                pathParams);
-
-            if (fixture != null)
-            {
-                context.Response.StatusCode = fixture.Response.StatusCode;
-
-                var contentType = string.IsNullOrWhiteSpace(fixture.Response.ContentType)
-                    ? "application/json; charset=utf-8"
-                    : fixture.Response.ContentType;
-                if (!contentType.Contains("charset", StringComparison.OrdinalIgnoreCase) && contentType.Contains("json", StringComparison.OrdinalIgnoreCase))
-                {
-                    contentType += "; charset=utf-8";
-                }
-                context.Response.ContentType = contentType;
-
-                if (fixture.Response.Data != null)
-                {
-                    // Validate that fixture conforms to contract response type
-                    if (matchedEndpoint.ResponseType != null && fixture.Response.StatusCode is >= 200 and < 300)
-                    {
-                        TypedFixtureStore.ValidateAndDeserialize(fixture, matchedEndpoint.ResponseType);
-                    }
-
-                    await context.Response.WriteAsync(fixture.Response.Data.ToJsonString());
-                }
-                return;
-            }
         }
 
-        // 3. Fallback for Hybrid mode
+        // 2. Fallback for Hybrid mode
         if (_options.Mode == MockMode.Hybrid && !string.IsNullOrEmpty(_options.TargetUrl))
         {
             var forwarded = await _forwarder!.ForwardAndRecordAsync(
@@ -255,7 +234,6 @@ public class TypedMockServer : IAsyncDisposable
                 new Uri(_options.TargetUrl),
                 matchedEndpoint,
                 pathParams,
-                _options.FixturesDirectory,
                 scenarioName);
             if (forwarded) return;
         }
@@ -264,12 +242,12 @@ public class TypedMockServer : IAsyncDisposable
         context.Response.StatusCode = StatusCodes.Status404NotFound;
         await context.Response.WriteAsJsonAsync(new
         {
-            error = "TypedMock: No matching mock rule or fixture found.",
+            error = "TypedMock: No matching mock rule found.",
             method = context.Request.Method,
             path,
             matchedContractEndpoint = matchedEndpoint?.ToString(),
             requestedScenario = scenarioName,
-            hint = "Record this endpoint first or configure a scenario rule using .For<T>().Setup(...) or add a fixture JSON file."
+            hint = "Record this endpoint first into a C# stub controller or configure a scenario rule using .For<T>().Setup(...)."
         });
     }
 }

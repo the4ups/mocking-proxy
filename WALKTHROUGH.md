@@ -23,36 +23,45 @@
 
 ## 2. Что получилось: Ключевая идея TypedMock
 
-В экосистеме .NET команды микросервисов обычно публикуют свои клиентские интеграционные контракты в виде **NuGet-пакетов** (например, через **RestEase** или **Refit** интерфейсы + C# DTO).
+### 💡 Концептуальный сдвиг: «JSON не нужен — сразу C# код»
+Традиционные инструменты (WireMock, Mountebank) сохраняют трафик в сотни мёртвых JSON-файлов:
+- JSON не проверяется компилятором `dotnet build`.
+- При переименовании полей DTO JSON тихо устаревает (Schema Drift).
+- JSON невозможно автоматически отрефакторить средствами IDE (`F2 / Rename`).
 
-> **Идея TypedMock:** Использовать этот опубликованный NuGet-контракт как **единый источник правды (Single Source of Truth)** для мокирования и проксирования.
+В **TypedMock** мы отказываемся от промежуточного JSON в пользу **прямой генерации компилируемых C# контроллеров**:
+1. **Compile-Time безопасность:** При обновлении контрактов стабы либо компилируются, либо компилятор сразу показывает ошибку (`CS0535` / `CS1061`).
+2. **Детерминированный Pattern-Matching:** Входной запрос (Route, Query, Request Body DTO) строго связывается с конкретным ответом прямо в C#-коде (`request switch { { City: "Berlin", TemperatureC: 23 } => ... }`).
+3. **Повторные вызовы (Idempotency):** Никаких нестабильных очередей (queues/sequences) — один и тот же запрос всегда детерминированно возвращает один и тот же записанный ответ, выдерживая ретраи (Polly) и параллельные вызовы.
+4. **Языковая независимость через OpenAPI / Swagger:** Контракт может поступать не только как C# NuGet, но и как Swagger/OpenAPI спецификация (от сервисов на Go, Java, Python), из которой генерируются типизированные C# DTO и стабы.
 
 ```mermaid
 flowchart TD
-    subgraph NuGet["NuGet Contract Package (ExternalService.Contracts)"]
-        Interface["IWeatherApi Interface\n[Get('/weatherforecast/{city}')]"]
-        DTO["WeatherForecastDto\n(City, TemperatureC, Summary)"]
+    subgraph Contracts["Контракты (Single Source of Truth)"]
+        direction TB
+        DotNet["C# NuGet Package\n(RestEase / Refit)"]
+        Swagger["OpenAPI / Swagger Spec\n(Language-Agnostic: Go, Java, Python)"]
     end
 
     subgraph Core["TypedMock Engine"]
-        Scanner["RestEase Contract Scanner\n(Автосканирование типов и роутов)"]
-        Validator["Schema & Type Safety Validator"]
-        CodeGen["C# Stub Controller Generator"]
+        Scanner["Contract Scanner & Route Matcher"]
+        Proxy["Record Proxy (Upstream Traffic Interceptor)"]
+        CodeGen["C# Stub Generator (Pattern Matching & Value Emitter)"]
     end
 
-    subgraph Modes["Режимы работы"]
-        Record["1. Record Mode (Проксирует в реальный API, валидирует по DTO, сохраняет фикстуры)"]
-        Replay["2. Replay Mode (Отдает ответы автономно, без внешнего API)"]
-        Stubs["3. C# Stubs (Генерирует компилируемый ASP.NET Core контроллер)"]
+    subgraph GeneratedArtifacts["Целевой результат (Zero-JSON)"]
+        Controller["Typed C# Stub Controller\n(: ControllerBase, IExternalContract)"]
+        Host["In-Memory / HTTP Stand Host\n(Compile-Time Safe & IDE Refactorable)"]
     end
 
-    NuGet --> Core
-    Core --> Modes
+    Contracts --> Core
+    Core --> GeneratedArtifacts
 ```
 
-### Два эшелона защиты от дрифта:
-1. **Рантайм-защита (Типизированные фикстуры):** Любой сохраненный JSON автоматически десериализуется в целевой C# DTO. Если контракт изменился и JSON перестал подходить — тест или мок-сервер **немедленно падает с `ContractValidationException`**, четко указывая, что именно сломалось.
-2. **Compile-Time защита (C# Stubs):** TypedMock умеет компилировать перехваченный сетевой трафик прямо в **C# ASP.NET Core контроллеры**, реализующие тот же контрактный интерфейс (`WeatherApiStubController : ControllerBase, IWeatherApi`). При обновлении NuGet-пакета проект со стабами **вообще не скомпилируется** (`CS0535: does not implement interface member`), если контракт нарушен!
+### Защита от дрифта и повторяющихся вызовов:
+1. **Детерминированное связывание «Вход -> Ответ»:** Входные DTO и параметры запроса превращаются в C# Pattern Matching. Если для данного запроса нет записанного ответа, возвращается `404 Not Found` (`StubNotFoundException`), а не случайные данные.
+2. **Дедупликация:** Повторные запросы с идентичным телом или параметрами не дублируют код, а сливаются в один стабильный case в `switch`.
+3. **Compile-Time защита (C# Stubs):** При удалении или переименовании поля в DTO сгенерированные моки немедленно выдают ошибку компиляции.
 
 ---
 
@@ -67,85 +76,91 @@ flowchart TD
 | [`src/TypedMock.Server`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/src/TypedMock.Server) | Standalone CLI-приложение для запуска на тестовых стендах / в Docker-контейнерах. Поддерживает режимы `--mode=Record` / `--mode=Replay` и endpoint диагностики `/__typedmock/status`. |
 | [`src/SampleExternalService`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/src/SampleExternalService) | Реальный внешний веб-сервис для записи трафика. |
 | [`src/SampleClientApp`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/src/SampleClientApp) | Потребительский микросервис, вызывающий внешнее API через `RestClient.For<IWeatherApi>()`. |
-| [`tests/TypedMock.Tests`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/tests/TypedMock.Tests) | 18 интеграционных тестов, подтверждающих все заявленные сценарии (запись, воспроизведение, Fluent C# Setup, симуляция 500-х ошибок, обнаружение дрифта, C# генерация). |
+| [`tests/TypedMock.Tests`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/tests/TypedMock.Tests) | 19 интеграционных тестов, подтверждающих все сценарии (запись, воспроизведение, C# Setup, симуляция 500-х ошибок, обнаружение дрифта, C# генерация с pattern-matching, дедупликация и повторные вызовы). |
 
 ---
 
 ## 4. Что мы получаем на выходе (Артефакты)
 
-### Артефакт 1: Структурированные типизированные фикстуры
-При записи трафика файлы сохраняются не в виде хаотичных хэшей, а в строгой иерархии:
-`./fixtures/{ContractName}/{MethodName}/{Scenario}.json`
-
-Пример: `./fixtures/IWeatherApi/GetForecastByCityAsync/city_London.json`:
-```json
-{
-  "contractName": "IWeatherApi",
-  "methodName": "GetForecastByCityAsync",
-  "scenario": "city_London",
-  "request": {
-    "httpMethod": "GET",
-    "path": "/weatherforecast/London",
-    "queryString": "",
-    "headers": {},
-    "body": null
-  },
-  "response": {
-    "statusCode": 200,
-    "contentType": "application/json",
-    "headers": {},
-    "bodyJson": "{\"city\":\"London\",\"date\":\"2026-11-05\",\"temperatureC\":15,\"temperatureF\":58,\"summary\":\"Mild\"}"
-  },
-  "recordedAt": "2026-11-05T12:00:00Z"
-}
-```
-
-### Артефакт 2: Сгенерированный C# контроллер-стаб (Zero-JSON подход)
-TypedMock умеет переводить записанные HTTP-сессии в чистый C# код:
+### Главный артефакт: Сгенерированный C# контроллер-стаб (Zero-JSON подход)
+TypedMock переводит записанные HTTP-сессии напрямую в чистый, типизированный C# код с детерминированным pattern-matching:
 
 ```csharp
-namespace ExternalService.Stubs;
+namespace Generated.Stubs;
 
 [ApiController]
 public partial class WeatherApiStubController : ControllerBase, IWeatherApi
 {
+    // 1. GET без параметров: возвращает зафиксированный типизированный список
+    [HttpGet("weatherforecast")]
+    public virtual async Task<List<WeatherForecastDto>> GetForecastsAsync()
+    {
+        var custom = await OnGetForecastsAsync();
+        if (custom != null) return custom;
+
+        return new List<WeatherForecastDto>
+        {
+            new WeatherForecastDto { City = "London", TemperatureC = 12, Summary = "Chilly" },
+            new WeatherForecastDto { City = "Paris", TemperatureC = 18, Summary = "Mild" }
+        };
+    }
+
+    // 2. GET с Path-параметром: сопоставление по параметрам маршрута
     [HttpGet("weatherforecast/{city}")]
-    public virtual async Task<WeatherForecastDto?> GetForecastByCityAsync([Path("city")] string city)
+    public virtual async Task<WeatherForecastDto> GetForecastByCityAsync([FromRoute(Name = "city")] string city)
     {
         var custom = await OnGetForecastByCityAsync(city);
         if (custom != null) return custom;
 
         return (city?.ToLowerInvariant()) switch
         {
-            "london" => new WeatherForecastDto
-            {
-                City = "London",
-                Date = new DateOnly(2026, 11, 5),
-                TemperatureC = 15,
-                Summary = "Mild"
-            },
-            "paris" => new WeatherForecastDto
-            {
-                City = "Paris",
-                Date = new DateOnly(2026, 11, 5),
-                TemperatureC = 22,
-                Summary = "Warm"
-            },
-            _ => null
+            "london" => new WeatherForecastDto { City = "London", TemperatureC = 12, Summary = "Chilly" },
+            "paris" => new WeatherForecastDto { City = "Paris", TemperatureC = 18, Summary = "Mild" },
+            _ => throw new StubNotFoundException($"No recorded stub for city '{city}'.")
         };
     }
 
-    // Точка расширения для кастомных сценариев в автотестах:
+    // 3. POST с телом запроса: Property Pattern Matching по входящему DTO
+    [HttpPost("weatherforecast")]
+    public virtual async Task<WeatherForecastDto> CreateForecastAsync([FromBody] CreateForecastRequest request)
+    {
+        var custom = await OnCreateForecastAsync(request);
+        if (custom != null) return custom;
+
+        return request switch
+        {
+            { City: "Berlin", TemperatureC: 23, Summary: "Sunny and clear" } =>
+                new WeatherForecastDto
+                {
+                    City = "Berlin",
+                    TemperatureC = 23,
+                    Summary = "Sunny and clear",
+                    Date = DateOnly.Parse("2026-11-11", CultureInfo.InvariantCulture)
+                },
+            { City: "Rome", TemperatureC: 28, Summary: "Hot" } =>
+                new WeatherForecastDto
+                {
+                    City = "Rome",
+                    TemperatureC = 28,
+                    Summary = "Hot",
+                    Date = DateOnly.Parse("2026-11-11", CultureInfo.InvariantCulture)
+                },
+            _ => throw new StubNotFoundException($"No recorded stub for request '{request}'.")
+        };
+    }
+
+    // Точки расширения для кастомных сценариев и fault injection в автотестах:
     protected virtual Task<WeatherForecastDto?> OnGetForecastByCityAsync(string city) => Task.FromResult<WeatherForecastDto?>(null);
+    protected virtual Task<WeatherForecastDto?> OnCreateForecastAsync(CreateForecastRequest request) => Task.FromResult<WeatherForecastDto?>(null);
 }
 ```
 
-### Артефакт 3: Диагностика тестового стенда в реальном времени
+### Диагностика стенда в реальном времени
 Эндпоинт `GET /__typedmock/status` возвращает текущее состояние:
 - Текущий режим работы (`Record`, `Replay`, `Hybrid`).
 - Целевой адрес реального сервиса (`targetUrl`).
 - Зарегистрированные интерфейсы и их методы.
-- Список загруженных сценариев и фикстур.
+- Список загруженных сценариев.
 
 ---
 

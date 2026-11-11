@@ -13,14 +13,15 @@ Recording raw HTTP traffic into JSON mapping files (e.g., standard WireMock/Moun
 1. **Schema Drift**: If an external dependency modifies its API schema, raw JSON mocks continue returning old data silently, letting bugs slip into test stands and production.
 2. **Maintenance Hell**: Modifying hundreds of raw JSON files with arbitrary URLs, regexes, and payload blobs is tedious and error-prone.
 3. **No Compile-Time Safety**: Renaming a field in a DTO doesn't update the JSON files, leading to fragile integration tests.
+4. **Flaky Sequenced Calls**: State-based call queues break when tests run in parallel or execute retries.
 
-### The Solution: RestEase Contract-Driven Mocking
-Most .NET enterprise services publish integration contracts as NuGet packages (RestEase interfaces + DTO models).
-**TypedMock** uses these contracts to:
-1. **Automatically Discover Routes & Types**: Scans `[Get]`, `[Post]`, `[Path]`, `[Body]` attributes directly from your NuGet interfaces (`IWeatherApi`).
-2. **Enforce Type Safety on Recorded Traffic**: When proxying to the real service, responses are validated and deserialized against the C# DTO types before saving.
-3. **Catch Schema Drift Immediately**: If a fixture's data cannot be deserialized into the contract DTO, `ContractValidationException` is thrown at test/startup time.
-4. **Compile-Time Test Case Creation**: Allows defining new mock scenarios directly in C# using fluent lambda expressions or scenario headers (`X-Mock-Scenario`).
+### The Solution: Zero-JSON Typed C# Stubs & Contract-Driven Matching
+**TypedMock** turns recorded traffic directly into **strongly-typed C# ASP.NET Core controllers**:
+1. **Contract-Driven**: Scans `[Get]`, `[Post]`, `[Path]`, `[Body]` attributes directly from integration contracts (RestEase / Refit or language-agnostic OpenAPI / Swagger schemas).
+2. **Deterministic Request-to-Response Pattern Matching**: Incoming request DTO bodies, path variables, and query parameters are mapped directly to responses using C# pattern matching (`request switch { { City: "Berlin", TemperatureC: 23 } => ... }`).
+3. **Fail-Fast at Compile Time**: If upstream removes or renames a property, your mock controllers won't compile (`CS0535` / `CS1061`). No dead JSON files in git.
+4. **Stable & Idempotent**: Repeating the same request with identical parameters returns the exact same deterministic response without fragile call queues.
+5. **OpenAPI / Swagger Bridge**: While .NET projects share C# contracts via NuGet, non-.NET upstream services (Go, Java, Python) can provide OpenAPI/Swagger specs to auto-generate the typed DTOs and mock controllers.
 
 ---
 
@@ -95,7 +96,7 @@ The test suite validates:
 - **Scenario 4:** Simulating external service errors (e.g. HTTP 500).
 - **Scenario 5:** Catching contract drift (broken/corrupted fixtures fail validation immediately).
 - **Scenario 6:** Recording and replaying POST requests with body payloads.
-- **C# Stub Code Generation:** Recording real traffic to emit strongly-typed ASP.NET Core controllers, in-memory Roslyn compilation, remote HTTP hosting via `StubServerHost`, manual subclass scenario overriding, and compile-time contract drift detection (`CS0535`).
+- **C# Stub Code Generation:** Recording real traffic to emit strongly-typed ASP.NET Core controllers, in-memory Roslyn compilation, remote HTTP hosting via `StubServerHost`, manual subclass scenario overriding, compile-time contract drift detection (`CS0535`), deterministic request body pattern matching, and deduplication of repeated calls.
 
 ### 2. Run the Standalone Server on a Test Stand
 

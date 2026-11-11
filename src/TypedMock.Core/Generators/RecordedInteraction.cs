@@ -8,6 +8,7 @@ public class RecordedInteraction
     public Dictionary<string, string> PathParameters { get; init; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> QueryParameters { get; init; } = new(StringComparer.OrdinalIgnoreCase);
     public string? RequestBody { get; init; }
+    public object? DeserializedRequestBody { get; set; }
     public int StatusCode { get; init; }
     public string? ResponseBody { get; init; }
     public object? DeserializedResponse { get; set; }

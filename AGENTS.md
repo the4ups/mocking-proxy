@@ -26,10 +26,10 @@ dotnet test --filter "FullyQualifiedName~CSharpStubIntegrationTests"
 dotnet format --verify-no-changes
 
 # Run Standalone Mock Proxy (Replay mode)
-dotnet run --project src/TypedMock.Server -- --mode=Replay --port=5050 --fixtures=./fixtures
+dotnet run --project src/TypedMock.Server -- --mode=Replay --port=5050
 
-# Run Standalone Mock Proxy (Record mode, upstream target required)
-dotnet run --project src/TypedMock.Server -- --mode=Record --port=5050 --target=http://localhost:5001 --fixtures=./fixtures
+# Run Standalone Mock Proxy (Record mode, upstream target required, saves C# stub controller on exit)
+dotnet run --project src/TypedMock.Server -- --mode=Record --port=5050 --target=http://localhost:5001 --out-stubs=./GeneratedStubs/WeatherApiStubController.cs
 
 # Run Sample External Service (Upstream dependency)
 dotnet run --project src/SampleExternalService -- 5001
@@ -46,7 +46,8 @@ dotnet run --project src/SampleClientApp -- http://localhost:5050
   - Scans RestEase contract interfaces via `RestEaseContractScanner` (`[Get]`, `[Post]`, `[Path]`, `[Body]`, `[Query]`, `[Header]`).
   - Modes: `Replay` (local fixtures / programmatic rules), `Record` (reverse proxy to upstream + save typed fixtures), `Hybrid` (replay if matched, fallback to upstream proxy).
   - Enforces schema safety: validates that fixture JSON response bodies deserialize into contract DTO return types at runtime; throws `ContractValidationException` on schema drift.
-  - C# Code Generation: `CSharpStubGenerator`, `CSharpValueEmitter`, and `StubServerHost` to record upstream traffic into version-controlled ASP.NET Core controllers with scenario hooks and compile-time drift detection.
+  - C# Code Generation: `CSharpStubGenerator`, `CSharpValueEmitter`, and `StubServerHost` to record upstream traffic into version-controlled ASP.NET Core controllers with deterministic request pattern-matching (Path/Query/Body DTO properties), deduplication of repeated calls, scenario hooks, and compile-time drift detection.
+  - Language-Agnostic Contracts: Designed to source contracts either from C# NuGet interfaces (RestEase/Refit) or OpenAPI/Swagger schemas.
 - `src/TypedMock.Server`: Standalone CLI host for test stands / containers. Exposes diagnostic health status at `/__typedmock/status`.
 - `src/SampleExternalService`: Upstream test server exposing minimal API endpoints and `Program.StartServerAsync(int port)`.
 - `src/SampleClientApp`: Consumer client invoking `WeatherReportService` via `RestClient.For<IWeatherApi>(url)`.
@@ -61,4 +62,4 @@ dotnet run --project src/SampleClientApp -- http://localhost:5050
   1. `X-Mock-Scenario` request header (configurable via `TypedMockOptions.ScenarioHeader`).
   2. `?__scenario=<name>` query string parameter.
   3. Defaults to `"default"`.
-- **Fixture Storage Hierarchy**: Serialized as `{FixturesDirectory}/{ContractName}/{MethodName}/{SanitizedScenario}.json`. When recording path-parameterized endpoints, scenario defaults to `<paramName>_<paramValue>` (e.g., `city_London.json`).
+- **C# Stubs Generation**: Saved to `--out-stubs=<path>` or via `mockServer.SaveStubSourceCodeAsync<TContract>(path)`. Contains deterministic pattern matching for route, query, and request body DTOs without intermediate JSON.

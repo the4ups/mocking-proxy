@@ -193,6 +193,70 @@ public static class CSharpValueEmitter
         return sbObj.ToString();
     }
 
+    public static string EmitPattern(object? value, ISet<string>? collectedNamespaces = null)
+    {
+        if (value is null)
+        {
+            return "null";
+        }
+
+        if (value is bool b) return b ? "true" : "false";
+        if (value is string s) return $"\"{EscapeString(s)}\"";
+        if (value is char c) return $"'{EscapeString(c.ToString())}'";
+        if (value is int i) return i.ToString(CultureInfo.InvariantCulture);
+        if (value is short sh) return sh.ToString(CultureInfo.InvariantCulture);
+        if (value is byte by) return by.ToString(CultureInfo.InvariantCulture);
+        if (value is sbyte sb) return sb.ToString(CultureInfo.InvariantCulture);
+        if (value is ushort us) return us.ToString(CultureInfo.InvariantCulture);
+        if (value is uint ui) return $"{ui.ToString(CultureInfo.InvariantCulture)}u";
+        if (value is long l) return $"{l.ToString(CultureInfo.InvariantCulture)}L";
+        if (value is ulong ul) return $"{ul.ToString(CultureInfo.InvariantCulture)}uL";
+        if (value is float f) return $"{f.ToString(CultureInfo.InvariantCulture)}f";
+        if (value is double d) return $"{d.ToString(CultureInfo.InvariantCulture)}d";
+        if (value is decimal m) return $"{m.ToString(CultureInfo.InvariantCulture)}m";
+
+        var type = value.GetType();
+
+        if (type.IsEnum)
+        {
+            if (!string.IsNullOrEmpty(type.Namespace))
+            {
+                collectedNamespaces?.Add(type.Namespace);
+            }
+            return $"{type.Name}.{value}";
+        }
+
+        // Complex DTO / Record
+        var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(p => p.CanRead && p.GetIndexParameters().Length == 0)
+            .Where(p => p.GetCustomAttribute<JsonIgnoreAttribute>() == null)
+            .ToList();
+
+        var propPatterns = new List<string>();
+        foreach (var prop in properties)
+        {
+            var propVal = prop.GetValue(value);
+            if (propVal == null) continue;
+
+            // Only pattern match against primitive/constant-like property types in C# patterns
+            var propType = prop.PropertyType;
+            var underlying = Nullable.GetUnderlyingType(propType) ?? propType;
+
+            if (underlying == typeof(string) || underlying.IsPrimitive || underlying.IsEnum || underlying == typeof(decimal))
+            {
+                var pat = EmitPattern(propVal, collectedNamespaces);
+                propPatterns.Add($"{prop.Name}: {pat}");
+            }
+        }
+
+        if (propPatterns.Count == 0)
+        {
+            return "{ }";
+        }
+
+        return $"{{ {string.Join(", ", propPatterns)} }}";
+    }
+
     public static string GetCleanTypeName(Type type, ISet<string>? collectedNamespaces = null)
     {
         if (type == typeof(void)) return "void";

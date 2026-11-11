@@ -29,12 +29,12 @@ flowchart TD
     subgraph StandaloneMock["TypedMock.Server (Proxy / Mock)"]
         AdminAPI["Admin UI / API\n(Alternative: Direct Stand State)"]
         Router["Scenario Matcher"]
-        Fixtures["Typed Fixtures Store\n{Contract}/{Method}/{Scenario}.json"]
+        Stubs["Typed C# Stubs\n(Pattern-Matching Controllers)"]
         
         Client -->|HTTP + X-Mock-Scenario| Router
         QA -.->|Or flips active scenario switch| AdminAPI
         AdminAPI -.-> Router
-        Router --> Fixtures
+        Router --> Stubs
     end
 ```
 
@@ -156,7 +156,7 @@ Content-Type: application/json
 `TypedMock` inspects `context.Connection.RemoteIpAddress` or `X-Forwarded-For` and applies the scenario only to requests originating from that specific tester.
 
 #### C. Embedded Web UI (`/__typedmock/ui`):
-`TypedMock.Server` can host a lightweight UI where QA engineers see a catalog of all registered contracts and methods, browse available JSON fixtures, and click an **"Activate Scenario"** or **"Reset"** button.
+`TypedMock.Server` can host a lightweight UI where QA engineers see a catalog of all registered contracts and methods, browse available C# stub scenarios, and click an **"Activate Scenario"** or **"Reset"** button.
 
 ---
 
@@ -175,15 +175,15 @@ Instead of dynamic runtime toggles, mock responses are tied to specific **test a
 
 ---
 
-## 5. Option 5: Input Data Conventions (Zero Setup)
+## 5. Option 5: Input Data Conventions (Zero Setup Pattern Matching)
 
-`TypedMock` automatically sanitizes and binds path parameters to fixture names (e.g., `city_London.json`).
+`TypedMock` automatically matches input parameters to deterministic C# switch cases.
 
 ### How It Works:
-You can create specialized fixtures mapped to recognizable input keywords:
-* City input: `London` $\rightarrow$ resolves `city_London.json` (normal 200 OK).
-* City input: `ErrorCity` or `London_500` $\rightarrow$ resolves `city_London_500.json` (recorded 500 error).
-* City input: `SnowCity` $\rightarrow$ resolves `city_SnowCity.json`.
+You can map recognized input keywords directly in the controller switch pattern:
+* City input: `London` $\rightarrow$ resolves `new WeatherForecastDto { City = "London", ... }` (normal 200 OK).
+* City input: `ErrorCity` or `London_500` $\rightarrow$ throws `StubHttpException(500, "Database error")`.
+* City input: `SnowCity` $\rightarrow$ resolves cold weather DTO.
 
 **Pros:**
 - Works out-of-the-box today in `TypedMock` with zero code changes in the web app or proxy.

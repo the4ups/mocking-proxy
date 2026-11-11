@@ -3,7 +3,6 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using TypedMock.Core.Contracts;
-using TypedMock.Core.Fixtures;
 using TypedMock.Core.Models;
 
 namespace TypedMock.Core.Scenarios;
@@ -62,34 +61,6 @@ public class ProgrammaticMockRule
 
     public bool Matches(string method, Dictionary<string, string> pathParams, string? requestedScenario) =>
         Matches(method, pathParams, null, requestedScenario);
-
-    public TypedFixture ToFixture()
-    {
-        JsonNode? node = null;
-        if (ResponseData != null)
-        {
-            var json = JsonSerializer.Serialize(ResponseData);
-            node = JsonNode.Parse(json);
-        }
-
-        return new TypedFixture
-        {
-            Contract = InterfaceType.Name,
-            Method = Method.Name,
-            Scenario = ScenarioName ?? "programmatic",
-            Request = new TypedFixtureRequest
-            {
-                PathParameters = new Dictionary<string, string>(ExpectedPathParameters),
-                QueryParameters = new Dictionary<string, string>(ExpectedQueryParameters)
-            },
-            Response = new TypedFixtureResponse
-            {
-                StatusCode = StatusCode,
-                ContentType = ContentType,
-                Data = node
-            }
-        };
-    }
 }
 
 public class ContractMockSetup<TInterface> where TInterface : class

@@ -27,21 +27,21 @@ public partial class WeatherApiStubController : ControllerBase, IWeatherApi
         {
             new WeatherForecastDto
             {
-                Date = DateOnly.Parse("2026-11-05", CultureInfo.InvariantCulture),
+                Date = DateOnly.Parse("2026-11-11", CultureInfo.InvariantCulture),
                 TemperatureC = 12,
                 Summary = "Chilly",
                 City = "London"
             },
             new WeatherForecastDto
             {
-                Date = DateOnly.Parse("2026-11-05", CultureInfo.InvariantCulture),
+                Date = DateOnly.Parse("2026-11-11", CultureInfo.InvariantCulture),
                 TemperatureC = 18,
                 Summary = "Mild",
                 City = "Paris"
             },
             new WeatherForecastDto
             {
-                Date = DateOnly.Parse("2026-11-05", CultureInfo.InvariantCulture),
+                Date = DateOnly.Parse("2026-11-11", CultureInfo.InvariantCulture),
                 TemperatureC = 22,
                 Summary = "Warm",
                 City = "Tokyo"
@@ -60,7 +60,7 @@ public partial class WeatherApiStubController : ControllerBase, IWeatherApi
             "london" =>
                 new WeatherForecastDto
                 {
-                    Date = DateOnly.Parse("2026-11-05", CultureInfo.InvariantCulture),
+                    Date = DateOnly.Parse("2026-11-11", CultureInfo.InvariantCulture),
                     TemperatureC = 12,
                     Summary = "Chilly",
                     City = "London"
@@ -68,7 +68,7 @@ public partial class WeatherApiStubController : ControllerBase, IWeatherApi
             "paris" =>
                 new WeatherForecastDto
                 {
-                    Date = DateOnly.Parse("2026-11-05", CultureInfo.InvariantCulture),
+                    Date = DateOnly.Parse("2026-11-11", CultureInfo.InvariantCulture),
                     TemperatureC = 18,
                     Summary = "Mild",
                     City = "Paris"
@@ -83,12 +83,17 @@ public partial class WeatherApiStubController : ControllerBase, IWeatherApi
         var custom = await OnCreateForecastAsync(request);
         if (custom != null) return custom;
 
-        return new WeatherForecastDto
+        return request switch
         {
-            Date = DateOnly.Parse("2026-11-05", CultureInfo.InvariantCulture),
-            TemperatureC = 23,
-            Summary = "Sunny and clear",
-            City = "Berlin"
+            { City: "Berlin", TemperatureC: 23, Summary: "Sunny and clear" } =>
+                new WeatherForecastDto
+                {
+                    Date = DateOnly.Parse("2026-11-11", CultureInfo.InvariantCulture),
+                    TemperatureC = 23,
+                    Summary = "Sunny and clear",
+                    City = "Berlin"
+                },
+            _ => throw new StubNotFoundException($"No recorded stub for request '{request}'.")
         };
     }
 

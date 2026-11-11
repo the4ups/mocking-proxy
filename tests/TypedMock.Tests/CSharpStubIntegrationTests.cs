@@ -373,6 +373,80 @@ public class CSharpStubIntegrationTests
         all.Should().HaveCount(3);
     }
 
+    [Fact]
+    public async Task Test9_DeterministicRequestMatching_MultipleBodiesAndRepeatedInvocations()
+    {
+        // 1. Arrange: Start upstream external service
+        await using var realService = await SampleExternalService.Program.StartServerAsync(port: 0);
+        var realServiceAddresses = realService.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>();
+        var realServiceUrl = realServiceAddresses!.Addresses.First();
+
+        await using var mockServer = new TypedMockServer(new TypedMockOptions
+        {
+            Mode = MockMode.Record,
+            TargetUrl = realServiceUrl
+        });
+        mockServer.RegisterContract<IWeatherApi>();
+        await mockServer.StartAsync();
+
+        var recordingClient = RestClient.For<IWeatherApi>(mockServer.BaseUrl);
+
+        // Record first Berlin request
+        var reqBerlin = new CreateForecastRequest { City = "Berlin", TemperatureC = 23, Summary = "Sunny" };
+        var resBerlin1 = await recordingClient.CreateForecastAsync(reqBerlin);
+        resBerlin1.City.Should().Be("Berlin");
+
+        // Record Rome request
+        var reqRome = new CreateForecastRequest { City = "Rome", TemperatureC = 28, Summary = "Hot" };
+        var resRome = await recordingClient.CreateForecastAsync(reqRome);
+        resRome.City.Should().Be("Rome");
+
+        // Repeat Berlin request (multiple calls to the same endpoint with identical input)
+        var resBerlin2 = await recordingClient.CreateForecastAsync(reqBerlin);
+        resBerlin2.City.Should().Be("Berlin");
+
+        // 2. Act: Generate C# Stub source code
+        var sourceCode = mockServer.GenerateStubSourceCode<IWeatherApi>();
+
+        // 3. Assert on generated code structure
+        sourceCode.Should().Contain("return request switch");
+        sourceCode.Should().Contain("City: \"Berlin\"");
+        sourceCode.Should().Contain("City: \"Rome\"");
+        sourceCode.Should().Contain("_ => throw new StubNotFoundException");
+
+        // Verify deduplication: pattern branch for Berlin appears exactly once in switch
+        var berlinPatternMatches = sourceCode.Split("City: \"Berlin\"").Length - 1;
+        berlinPatternMatches.Should().Be(1, "Repeated recordings of the identical request should be deduplicated to 1 switch case");
+
+        // 4. Compile and host generated controller over HTTP
+        var assembly = CompileSourceToAssembly(sourceCode);
+        var controllerType = assembly.GetType("Generated.Stubs.WeatherApiStubController")!;
+
+        await using var stubHost = await StubServerHost.StartAsync(controllerType, port: 0);
+        var stubUrl = StubServerHost.GetServerUrl(stubHost);
+        var client = RestClient.For<IWeatherApi>(stubUrl);
+
+        // 5. Verify deterministic matching of distinct bodies
+        var stubBerlin = await client.CreateForecastAsync(reqBerlin);
+        stubBerlin.City.Should().Be("Berlin");
+        stubBerlin.TemperatureC.Should().Be(23);
+
+        var stubRome = await client.CreateForecastAsync(reqRome);
+        stubRome.City.Should().Be("Rome");
+        stubRome.TemperatureC.Should().Be(28);
+
+        // Verify repeated call to Berlin returns identical deterministic response
+        var stubBerlinRepeat = await client.CreateForecastAsync(reqBerlin);
+        stubBerlinRepeat.City.Should().Be("Berlin");
+        stubBerlinRepeat.TemperatureC.Should().Be(23);
+
+        // Unrecorded body yields 404 StubNotFoundException
+        var reqUnrecorded = new CreateForecastRequest { City = "Madrid", TemperatureC = 30, Summary = "Dry" };
+        var act = () => client.CreateForecastAsync(reqUnrecorded);
+        await act.Should().ThrowAsync<ApiException>()
+            .Where(ex => ex.StatusCode == System.Net.HttpStatusCode.NotFound);
+    }
+
     private static string GetTestsProjectDirectory()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

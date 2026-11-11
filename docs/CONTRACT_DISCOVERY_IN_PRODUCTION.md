@@ -83,12 +83,13 @@ docker run -d \
   --name typedmock-stand \
   -p 5050:5050 \
   -v /opt/teststand/contracts:/app/contracts:ro \
-  -v /opt/teststand/fixtures:/app/fixtures \
+  -v /opt/teststand/stubs:/app/stubs \
   company/typedmock-server:latest \
-  --mode=Replay \
+  --mode=Record \
   --port=5050 \
+  --target=http://real-service:5001 \
   --contracts-dir=/app/contracts \
-  --fixtures=/app/fixtures
+  --out-stubs=/app/stubs/WeatherApiStubController.cs
 ```
 
 ---

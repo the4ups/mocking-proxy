@@ -1,12 +1,17 @@
 using ExternalService.Contracts;
 using FluentAssertions;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using RestEase;
 using SampleClientApp;
 using TypedMock.Core;
-using TypedMock.Core.Fixtures;
+using TypedMock.Core.Exceptions;
+using TypedMock.Core.Hosting;
+using TypedMock.Core.Proxy;
 using TypedMock.Core.Scenarios;
 
 namespace TypedMock.Tests;
@@ -14,125 +19,77 @@ namespace TypedMock.Tests;
 public class TypedMockIntegrationTests
 {
     [Fact]
-    public async Task Scenario1_RecordTraffic_FromRealService_CapturesAndValidatesTypedFixtures()
+    public async Task Scenario1_RecordTraffic_FromRealService_CapturesAndValidatesTypedInteractions()
     {
         // 1. Arrange: Start the REAL external service
         await using var realService = await SampleExternalService.Program.StartServerAsync(port: 0);
         var realServiceAddresses = realService.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>();
         var realServiceUrl = realServiceAddresses!.Addresses.First();
 
-        var tempFixturesDir = Path.Combine(Path.GetTempPath(), "typedmock_fixtures_" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(tempFixturesDir);
-
-        try
+        // 2. Start TypedMock in RECORD mode, pointing to the real service
+        var mockOptions = new TypedMockOptions
         {
-            // 2. Start TypedMock in RECORD mode, pointing to the real service
-            var mockOptions = new TypedMockOptions
-            {
-                Mode = MockMode.Record,
-                TargetUrl = realServiceUrl,
-                FixturesDirectory = tempFixturesDir
-            };
+            Mode = MockMode.Record,
+            TargetUrl = realServiceUrl
+        };
 
-            await using var mockServer = new TypedMockServer(mockOptions);
-            mockServer.RegisterContract<IWeatherApi>();
-            await mockServer.StartAsync();
+        await using var mockServer = new TypedMockServer(mockOptions);
+        mockServer.RegisterContract<IWeatherApi>();
+        await mockServer.StartAsync();
 
-            // 3. Client calls the Mock Proxy (thinking it's the external service)
-            var client = WeatherReportService.Create(mockServer.BaseUrl);
+        // 3. Client calls the Mock Proxy (thinking it's the external service)
+        var client = WeatherReportService.Create(mockServer.BaseUrl);
 
-            var summary = await client.GetCitySummaryAsync("London");
-            var avgTemp = await client.GetAverageTemperatureAsync();
+        var summary = await client.GetCitySummaryAsync("London");
+        var avgTemp = await client.GetAverageTemperatureAsync();
 
-            // Verify client got real service data
-            summary.Should().Contain("London: 12°C");
-            avgTemp.Should().Be(17); // (12 + 18 + 22) / 3 = 17.33 -> 17
+        // Verify client got real service data
+        summary.Should().Contain("London: 12°C");
+        avgTemp.Should().Be(17); // (12 + 18 + 22) / 3 = 17.33 -> 17
 
-            // 4. Assert: Fixtures were captured and saved to disk
-            var londonFixturePath = Path.Combine(tempFixturesDir, "IWeatherApi", "GetForecastByCityAsync", "city_London.json");
-            File.Exists(londonFixturePath).Should().BeTrue("TypedMock should have recorded the London request");
+        // 4. Assert: In-memory interactions were recorded and validated against DTOs (Zero-JSON on disk)
+        mockServer.RecordedInteractions.Should().HaveCount(2);
 
-            var allForecastsFixturePath = Path.Combine(tempFixturesDir, "IWeatherApi", "GetForecastsAsync", "default.json");
-            File.Exists(allForecastsFixturePath).Should().BeTrue("TypedMock should have recorded the default all forecasts request");
+        var londonInteraction = mockServer.RecordedInteractions.First(i => i.Endpoint.Method.Name == "GetForecastByCityAsync");
+        var dto = londonInteraction.DeserializedResponse as WeatherForecastDto;
+        dto.Should().NotBeNull();
+        dto!.City.Should().Be("London");
+        dto.TemperatureC.Should().Be(12);
 
-            // 5. Assert: Saved fixtures deserialize cleanly into the RestEase DTO types
-            mockServer.FixtureStore.AllFixtures.Should().HaveCount(2);
-
-            var londonFixture = mockServer.FixtureStore.AllFixtures.First(f => f.Method == "GetForecastByCityAsync");
-            var dto = TypedFixtureStore.ValidateAndDeserialize(londonFixture, typeof(WeatherForecastDto)) as WeatherForecastDto;
-            dto.Should().NotBeNull();
-            dto!.City.Should().Be("London");
-            dto.TemperatureC.Should().Be(12);
-        }
-        finally
-        {
-            if (Directory.Exists(tempFixturesDir))
-            {
-                Directory.Delete(tempFixturesDir, true);
-            }
-        }
+        // 5. Assert: Can generate clean C# code directly from recorded interactions
+        var csharpCode = mockServer.GenerateStubSourceCode<IWeatherApi>();
+        csharpCode.Should().Contain("public partial class WeatherApiStubController : ControllerBase, IWeatherApi");
+        csharpCode.Should().Contain("\"london\" =>");
     }
 
     [Fact]
     public async Task Scenario2_ReplayTraffic_WithoutRealService_ReturnsValidContractData()
     {
-        // 1. Arrange: Setup recorded fixtures in a directory (Real service is OFFLINE)
-        var tempFixturesDir = Path.Combine(Path.GetTempPath(), "typedmock_replay_" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(tempFixturesDir);
-
-        try
+        // 1. Arrange: Start Mock Server in REPLAY mode with a typed programmatic setup (Real service is OFFLINE)
+        var mockOptions = new TypedMockOptions
         {
-            var store = new TypedFixtureStore();
-            await store.SaveFixtureAsync(tempFixturesDir, new TypedFixture
+            Mode = MockMode.Replay
+        };
+
+        await using var mockServer = new TypedMockServer(mockOptions);
+        mockServer.For<IWeatherApi>()
+            .Setup(x => x.GetForecastByCityAsync("Paris"))
+            .Returns(new WeatherForecastDto
             {
-                Contract = "IWeatherApi",
-                Method = "GetForecastByCityAsync",
-                Scenario = "city_Paris",
-                Request = new TypedFixtureRequest
-                {
-                    HttpMethod = "GET",
-                    Path = "/weatherforecast/Paris",
-                    PathParameters = new() { { "city", "Paris" } }
-                },
-                Response = new TypedFixtureResponse
-                {
-                    StatusCode = 200,
-                    Data = System.Text.Json.Nodes.JsonNode.Parse("""
-                    {
-                        "date": "2026-11-04",
-                        "city": "Paris",
-                        "temperatureC": 25,
-                        "summary": "Warm & Sunny"
-                    }
-                    """)
-                }
+                City = "Paris",
+                Date = new DateOnly(2026, 11, 4),
+                TemperatureC = 25,
+                Summary = "Warm & Sunny"
             });
 
-            // 2. Start Mock Server in REPLAY mode (no upstream target needed!)
-            var mockOptions = new TypedMockOptions
-            {
-                Mode = MockMode.Replay,
-                FixturesDirectory = tempFixturesDir
-            };
+        await mockServer.StartAsync();
 
-            await using var mockServer = new TypedMockServer(mockOptions);
-            mockServer.RegisterContract<IWeatherApi>();
-            await mockServer.StartAsync();
+        // 2. Act: Client calls the mock server
+        var client = WeatherReportService.Create(mockServer.BaseUrl);
+        var summary = await client.GetCitySummaryAsync("Paris");
 
-            // 3. Act: Client calls the mock server
-            var client = WeatherReportService.Create(mockServer.BaseUrl);
-            var summary = await client.GetCitySummaryAsync("Paris");
-
-            // 4. Assert: Data was served by the mock without any real external service running
-            summary.Should().Be("Paris: 25°C (76°F), Warm & Sunny");
-        }
-        finally
-        {
-            if (Directory.Exists(tempFixturesDir))
-            {
-                Directory.Delete(tempFixturesDir, true);
-            }
-        }
+        // 3. Assert: Data was served by the mock without any real external service running
+        summary.Should().Be("Paris: 25°C (76°F), Warm & Sunny");
     }
 
     [Fact]
@@ -187,88 +144,78 @@ public class TypedMockIntegrationTests
     [Fact]
     public async Task Scenario5_ContractDrift_DetectsSchemaMismatch_FailsValidationImmediately()
     {
-        // Arrange: A fixture has corrupted data (e.g., TemperatureC is a string that cannot parse or invalid shape)
-        var invalidFixture = new TypedFixture
+        // Arrange: Start a fake service returning schema-incompatible JSON (temperatureC is string)
+        var builder = Microsoft.AspNetCore.Builder.WebApplication.CreateEmptyBuilder(new Microsoft.AspNetCore.Builder.WebApplicationOptions());
+        builder.Services.AddRouting();
+        builder.WebHost.UseKestrel(k => k.Listen(System.Net.IPAddress.Loopback, 0));
+        var app = builder.Build();
+        app.MapGet("/weatherforecast/London", () => Microsoft.AspNetCore.Http.Results.Content(
+            "{\"city\":\"London\",\"temperatureC\":\"NOT_A_VALID_INT\"}", "application/json"));
+        await app.StartAsync();
+
+        var serverAddresses = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>();
+        var corruptedServiceUrl = serverAddresses!.Addresses.First();
+
+        try
         {
-            Contract = "IWeatherApi",
-            Method = "GetForecastByCityAsync",
-            Scenario = "corrupted",
-            Response = new TypedFixtureResponse
+            await using var mockServer = new TypedMockServer(new TypedMockOptions
             {
-                StatusCode = 200,
-                Data = System.Text.Json.Nodes.JsonNode.Parse("""
-                {
-                    "city": "London",
-                    "temperatureC": "THIS_IS_NOT_AN_INT"
-                }
-                """)
-            }
-        };
+                Mode = MockMode.Record,
+                TargetUrl = corruptedServiceUrl
+            });
+            mockServer.RegisterContract<IWeatherApi>();
+            await mockServer.StartAsync();
 
-        // Act
-        var act = () => TypedFixtureStore.ValidateAndDeserialize(invalidFixture, typeof(WeatherForecastDto));
+            var client = RestClient.For<IWeatherApi>(mockServer.BaseUrl);
 
-        // Assert
-        act.Should().Throw<ContractValidationException>()
-            .WithMessage("*cannot be deserialized into contract type*");
+            // Act & Assert: Proxy detects contract drift during deserialization and fails fast
+            var act = () => client.GetForecastByCityAsync("London");
+            await act.Should().ThrowAsync<ApiException>();
+        }
+        finally
+        {
+            await app.StopAsync();
+            await app.DisposeAsync();
+        }
     }
 
     [Fact]
-    public async Task Scenario6_PostRequestWithBody_RecordsAndReplaysCorrectly()
+    public async Task Scenario6_PostRequestWithBody_RecordsAndGeneratesTypedStubCorrectly()
     {
         // 1. Arrange: Start REAL service
         await using var realService = await SampleExternalService.Program.StartServerAsync(port: 0);
         var realServiceAddresses = realService.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>();
         var realServiceUrl = realServiceAddresses!.Addresses.First();
 
-        var tempFixturesDir = Path.Combine(Path.GetTempPath(), "typedmock_post_" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(tempFixturesDir);
-
-        try
+        // Record mode
+        var recordOptions = new TypedMockOptions
         {
-            // Record mode
-            var recordOptions = new TypedMockOptions
-            {
-                Mode = MockMode.Record,
-                TargetUrl = realServiceUrl,
-                FixturesDirectory = tempFixturesDir
-            };
-            await using var recordServer = new TypedMockServer(recordOptions);
-            recordServer.RegisterContract<IWeatherApi>();
-            await recordServer.StartAsync();
+            Mode = MockMode.Record,
+            TargetUrl = realServiceUrl
+        };
+        await using var recordServer = new TypedMockServer(recordOptions);
+        recordServer.RegisterContract<IWeatherApi>();
+        await recordServer.StartAsync();
 
-            var client = WeatherReportService.Create(recordServer.BaseUrl);
-            var created = await client.AddForecastAsync("Berlin", 16, "Partly Cloudy");
-            created.City.Should().Be("Berlin");
-            created.TemperatureC.Should().Be(16);
+        var client = WeatherReportService.Create(recordServer.BaseUrl);
+        var created = await client.AddForecastAsync("Berlin", 16, "Partly Cloudy");
+        created.City.Should().Be("Berlin");
+        created.TemperatureC.Should().Be(16);
 
-            await recordServer.StopAsync();
+        await recordServer.StopAsync();
 
-            // 2. Replay mode (real service shut down)
-            await realService.StopAsync();
+        // 2. Assert interaction recorded with typed request body
+        recordServer.RecordedInteractions.Should().HaveCount(1);
+        var postInteraction = recordServer.RecordedInteractions.First();
+        var reqDto = postInteraction.DeserializedRequestBody as CreateForecastRequest;
+        reqDto.Should().NotBeNull();
+        reqDto!.City.Should().Be("Berlin");
+        reqDto.TemperatureC.Should().Be(16);
 
-            var replayOptions = new TypedMockOptions
-            {
-                Mode = MockMode.Replay,
-                FixturesDirectory = tempFixturesDir
-            };
-            await using var replayServer = new TypedMockServer(replayOptions);
-            replayServer.RegisterContract<IWeatherApi>();
-            await replayServer.StartAsync();
-
-            var replayClient = WeatherReportService.Create(replayServer.BaseUrl);
-            var replayCreated = await replayClient.AddForecastAsync("Berlin", 16, "Partly Cloudy");
-            replayCreated.City.Should().Be("Berlin");
-            replayCreated.TemperatureC.Should().Be(16);
-            replayCreated.Summary.Should().Be("Partly Cloudy");
-        }
-        finally
-        {
-            if (Directory.Exists(tempFixturesDir))
-            {
-                Directory.Delete(tempFixturesDir, true);
-            }
-        }
+        // 3. Assert generated code uses deterministic pattern matching for request DTO
+        var generatedCode = recordServer.GenerateStubSourceCode<IWeatherApi>();
+        generatedCode.Should().Contain("return request switch");
+        generatedCode.Should().Contain("City: \"Berlin\"");
     }
 
     [Fact]
@@ -331,97 +278,17 @@ public class TypedMockIntegrationTests
     }
 
     [Fact]
-    public async Task Scenario9_ExplicitScenario_NotFound_Returns404RatherThanSilentFallback()
+    public async Task Scenario9_UnmatchedRequest_Returns404RatherThanSilentFallback()
     {
-        // Arrange
-        var tempFixturesDir = Path.Combine(Path.GetTempPath(), "typedmock_scenario_404_" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(tempFixturesDir);
+        var mockOptions = new TypedMockOptions { Mode = MockMode.Replay };
+        await using var mockServer = new TypedMockServer(mockOptions);
+        mockServer.RegisterContract<IWeatherApi>();
+        await mockServer.StartAsync();
 
-        try
-        {
-            var store = new TypedFixtureStore();
-            await store.SaveFixtureAsync(tempFixturesDir, new TypedFixture
-            {
-                Contract = "IWeatherApi",
-                Method = "GetForecastByCityAsync",
-                Scenario = "default",
-                Request = new TypedFixtureRequest
-                {
-                    HttpMethod = "GET",
-                    Path = "/weatherforecast/Rome",
-                    PathParameters = new() { { "city", "Rome" } }
-                },
-                Response = new TypedFixtureResponse
-                {
-                    StatusCode = 200,
-                    Data = System.Text.Json.Nodes.JsonNode.Parse("""
-                    {
-                        "date": "2026-11-04",
-                        "city": "Rome",
-                        "temperatureC": 21,
-                        "summary": "Pleasant"
-                    }
-                    """)
-                }
-            });
+        var client = RestClient.For<IWeatherApi>(mockServer.BaseUrl);
 
-            var mockOptions = new TypedMockOptions
-            {
-                Mode = MockMode.Replay,
-                FixturesDirectory = tempFixturesDir
-            };
-            await using var mockServer = new TypedMockServer(mockOptions);
-            mockServer.RegisterContract<IWeatherApi>();
-            await mockServer.StartAsync();
-
-            using var httpClient = new HttpClient { BaseAddress = new Uri(mockServer.BaseUrl) };
-            httpClient.DefaultRequestHeaders.Add("X-Mock-Scenario", "NonExistentScenario");
-            var client = RestClient.For<IWeatherApi>(httpClient);
-
-            var act = async () => await client.GetForecastByCityAsync("Rome");
-            var ex = await act.Should().ThrowAsync<ApiException>();
-            ex.Which.StatusCode.Should().Be(System.Net.HttpStatusCode.NotFound);
-        }
-        finally
-        {
-            if (Directory.Exists(tempFixturesDir))
-            {
-                Directory.Delete(tempFixturesDir, true);
-            }
-        }
-    }
-
-    [Fact]
-    public void Scenario10_ToFixture_SerializesProgrammaticRuleToFixture()
-    {
-        var method = typeof(IWeatherApi).GetMethod(nameof(IWeatherApi.GetForecastByCityAsync))!;
-        var rule = new ProgrammaticMockRule
-        {
-            InterfaceType = typeof(IWeatherApi),
-            Method = method,
-            ExpectedPathParameters = new() { { "city", "Kyoto" } },
-            ScenarioName = "CustomScenario",
-            StatusCode = 200,
-            ResponseData = new WeatherForecastDto
-            {
-                City = "Kyoto",
-                Date = DateOnly.FromDateTime(DateTime.Today),
-                TemperatureC = 19,
-                Summary = "Breezy"
-            }
-        };
-
-        var fixture = rule.ToFixture();
-
-        fixture.Contract.Should().Be(nameof(IWeatherApi));
-        fixture.Method.Should().Be(nameof(IWeatherApi.GetForecastByCityAsync));
-        fixture.Scenario.Should().Be("CustomScenario");
-        fixture.Response.StatusCode.Should().Be(200);
-        fixture.Response.Data.Should().NotBeNull();
-
-        var deserialized = TypedFixtureStore.ValidateAndDeserialize(fixture, typeof(WeatherForecastDto)) as WeatherForecastDto;
-        deserialized.Should().NotBeNull();
-        deserialized!.City.Should().Be("Kyoto");
-        deserialized.TemperatureC.Should().Be(19);
+        var act = async () => await client.GetForecastByCityAsync("UnregisteredCity");
+        var ex = await act.Should().ThrowAsync<ApiException>();
+        ex.Which.StatusCode.Should().Be(System.Net.HttpStatusCode.NotFound);
     }
 }

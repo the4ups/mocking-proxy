@@ -9,7 +9,7 @@ Console.WriteLine("==================================================");
 var modeStr = GetArg(args, "--mode") ?? "Replay";
 var portStr = GetArg(args, "--port") ?? "5050";
 var targetUrl = GetArg(args, "--target");
-var fixturesDir = GetArg(args, "--fixtures") ?? Path.Combine(AppContext.BaseDirectory, "fixtures");
+var outStubs = GetArg(args, "--out-stubs") ?? Path.Combine(AppContext.BaseDirectory, "GeneratedStubs", "WeatherApiStubController.cs");
 
 if (!Enum.TryParse<MockMode>(modeStr, true, out var mode))
 {
@@ -23,13 +23,13 @@ var options = new TypedMockOptions
     Mode = mode,
     Port = port,
     TargetUrl = targetUrl,
-    FixturesDirectory = Path.GetFullPath(fixturesDir)
+    OutputStubPath = Path.GetFullPath(outStubs)
 };
 
 Console.WriteLine($"[Config] Mode:              {options.Mode}");
 Console.WriteLine($"[Config] Port:              {options.Port}");
 Console.WriteLine($"[Config] Target (upstream): {options.TargetUrl ?? "(none)"}");
-Console.WriteLine($"[Config] Fixtures Path:     {options.FixturesDirectory}");
+Console.WriteLine($"[Config] Output C# Stubs:   {options.OutputStubPath}");
 Console.WriteLine();
 
 var server = new TypedMockServer(options);
@@ -49,9 +49,8 @@ Console.WriteLine("      * GET  /weatherforecast/{city}");
 Console.WriteLine("      * POST /weatherforecast");
 Console.WriteLine();
 Console.WriteLine("Usage Tips:");
-Console.WriteLine("  * Send header 'X-Mock-Scenario: <name>' to test specific scenarios (e.g. StormWarning, Error500).");
-Console.WriteLine("  * When --mode=Record, calls forward to --target and save typed JSON fixtures.");
-Console.WriteLine("  * When --mode=Replay, responses match RestEase DTO schemas.");
+Console.WriteLine("  * When --mode=Record, calls forward to --target and generate strongly-typed C# stub controllers.");
+Console.WriteLine("  * When --mode=Replay, responses are verified against RestEase DTO schemas.");
 Console.WriteLine();
 Console.WriteLine("Press Ctrl+C to stop.");
 
@@ -73,7 +72,7 @@ catch (OperationCanceledException)
 finally
 {
     await server.StopAsync();
-    Console.WriteLine("TypedMock Server stopped.");
+    Console.WriteLine($"[Status] TypedMock Server stopped. Stubs saved to: {options.OutputStubPath}");
 }
 
 static string? GetArg(string[] args, string name)

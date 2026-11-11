@@ -158,69 +158,54 @@ At startup, `TypedMock.Server` uses reflection or `AssemblyLoadContext` to scan 
 
 ---
 
-## 3. C# Code-First Fixture Generator (Exporting Verified JSON)
+## 3. C# Code-First Stub Controller Generator (Zero-JSON Approach)
 
-If your organization prefers having static JSON files stored in Git (e.g., for cross-language compatibility, non-.NET tools, or visual diffs in PRs), you can author scenarios in C# and **compile/export them to JSON**.
-
-`ProgrammaticMockRule` contains a built-in `.ToFixture()` method that converts a C# rule into a `TypedFixture`:
+Instead of generating and maintaining fragile JSON files, `TypedMock` can compile captured interactions directly into **ASP.NET Core controllers** (`WeatherApiStubController.cs`).
 
 ```csharp
-// Program.cs in a "FixtureGenerator" console tool
-var store = new TypedFixtureStore();
-var targetDirectory = "./fixtures";
-
-void Register<T>(Action<ContractMockSetup<T>> configure) where T : class
+// Record upstream traffic and save C# stub controller:
+var mockServer = new TypedMockServer(new TypedMockOptions
 {
-    var setup = new ContractMockSetup<T>(async rule =>
-    {
-        var fixture = rule.ToFixture();
-        await store.SaveFixtureAsync(targetDirectory, fixture);
-    });
-    configure(setup);
-}
-
-// Author fixtures in C#:
-Register<IWeatherApi>(setup =>
-{
-    setup.Setup(x => x.GetForecastByCityAsync("London"))
-         .WithScenario("default")
-         .Returns(new WeatherForecastDto 
-         { 
-             City = "London", 
-             TemperatureC = 22, 
-             Summary = "Sunny" 
-         });
-
-    setup.Setup(x => x.GetForecastByCityAsync("London"))
-         .WithScenario("RainyDay")
-         .Returns(new WeatherForecastDto 
-         { 
-             City = "London", 
-             TemperatureC = 14, 
-             Summary = "Light Rain" 
-         });
+    Mode = MockMode.Record,
+    TargetUrl = "http://real-service:5001",
+    OutputStubPath = "./GeneratedStubs/WeatherApiStubController.cs"
 });
+mockServer.RegisterContract<IWeatherApi>();
+await mockServer.StartAsync();
+
+// Execute recording client...
+
+await mockServer.StopAsync(); // Automatically emits and saves WeatherApiStubController.cs
 ```
 
-When executed, this outputs:
-```
-fixtures/
-  └── IWeatherApi/
-      └── GetForecastByCityAsync/
-          ├── default.json
-          └── RainyDay.json
+When generated, the controller uses deterministic pattern matching (`switch`) and compiles as part of your test project:
+```csharp
+[ApiController]
+public partial class WeatherApiStubController : ControllerBase, IWeatherApi
+{
+    [HttpGet("weatherforecast/{city}")]
+    public virtual async Task<WeatherForecastDto> GetForecastByCityAsync([FromRoute(Name = "city")] string city)
+    {
+        return (city?.ToLowerInvariant()) switch
+        {
+            "london" => new WeatherForecastDto { City = "London", TemperatureC = 12, Summary = "Chilly" },
+            "paris" => new WeatherForecastDto { City = "Paris", TemperatureC = 18, Summary = "Mild" },
+            _ => throw new StubNotFoundException($"No recorded stub for city '{city}'.")
+        };
+    }
+}
 ```
 
-**Benefits of this hybrid model:**
-- Fixtures are generated from real C# types (preventing typos and invalid structures).
-- Version-controlled JSON files remain readable and reviewable in pull requests.
-- Can be automated as a step in CI/CD (`dotnet run --project FixtureGenerator`).
+**Benefits of the Zero-JSON approach:**
+- No dead JSON files in your repository.
+- 100% compile-time safety: contract changes fail `dotnet build` immediately.
+- Refactor-safe: renaming a property in IDE automatically updates all stubs.
 
 ---
 
 ## 4. Reusable Object Builders with Bogus / Test Data Factories
 
-Writing fixtures in C# unlocks the entire .NET test tooling ecosystem (such as [Bogus](https://github.com/bchavez/Bogus) for realistic fake data or custom domain builders):
+Writing fixtures and stubs in C# unlocks the entire .NET test tooling ecosystem (such as [Bogus](https://github.com/bchavez/Bogus) for realistic fake data or custom domain builders):
 
 ```csharp
 public class WeatherForecastBuilder
@@ -252,12 +237,12 @@ setup.Setup(x => x.GetForecastByCityAsync("London"))
 
 ## Comparison Matrix
 
-| Feature | Raw JSON Fixtures | In-Memory C# Fixtures | C# Fixture DLLs | C# Generator $\rightarrow$ JSON |
-| :--- | :--- | :--- | :--- | :--- |
-| **Language** | Plain JSON | C# | C# | C# (Outputs JSON) |
-| **Compile-Time Safety** | ❌ None | ✅ Complete | ✅ Complete | ✅ Complete |
-| **IDE Refactoring Support** | ❌ None | ✅ Full (`F2` / Rename) | ✅ Full (`F2` / Rename) | ✅ Full (`F2` / Rename) |
-| **IntelliSense Autocomplete** | ❌ None | ✅ Yes | ✅ Yes | ✅ Yes |
-| **Works with Standalone Server** | ✅ Yes | ❌ In-process only | ✅ Yes (`--fixtures-dll`) | ✅ Yes (Serves generated JSON) |
-| **Git Diff Visibility** | ✅ Raw JSON diff | ❌ In code only | ❌ In code only | ✅ JSON diffs in PRs |
-| **Reusable Builders / Faker** | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes |
+| Feature | Raw JSON Fixtures | In-Memory C# Fixtures | C# Stub Controllers (Zero-JSON) |
+| :--- | :--- | :--- | :--- |
+| **Artifact Format** | Flat JSON files | In-memory lambda setups | C# Controllers (`.cs`) |
+| **Compile-Time Safety** | ❌ None | ✅ Complete | ✅ Complete |
+| **IDE Refactoring Support** | ❌ None | ✅ Full (`F2` / Rename) | ✅ Full (`F2` / Rename) |
+| **IntelliSense Autocomplete** | ❌ None | ✅ Yes | ✅ Yes |
+| **Works with Standalone Server** | ✅ Yes | ❌ In-process only | ✅ Yes (via `StubServerHost`) |
+| **Git Diff Visibility** | ⚠️ Raw JSON blobs | ❌ In code only | ✅ Clean C# code diffs |
+| **Reusable Builders / Faker** | ❌ No | ✅ Yes | ✅ Yes |

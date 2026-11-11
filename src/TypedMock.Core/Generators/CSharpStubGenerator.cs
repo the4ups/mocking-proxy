@@ -148,48 +148,10 @@ public static class CSharpStubGenerator
             }
             else
             {
-                var pathParams = endpoint.Parameters.Where(p => p.Kind == ParameterKind.Path).ToList();
+                var parameters = method.GetParameters();
 
-                if (pathParams.Count == 1)
+                if (parameters.Length == 0)
                 {
-                    var pMapping = pathParams[0];
-                    var paramName = pMapping.ParameterName;
-
-                    methodsSb.AppendLine($"        return ({paramName}?.ToLowerInvariant()) switch");
-                    methodsSb.AppendLine("        {");
-
-                    // Group by path param value
-                    var distinctCalls = methodCalls
-                        .GroupBy(c => c.PathParameters.TryGetValue(pMapping.TargetName, out var v) ? v.ToLowerInvariant() : "")
-                        .ToList();
-
-                    foreach (var group in distinctCalls)
-                    {
-                        var paramVal = group.Key;
-                        var latest = group.Last();
-
-                        methodsSb.AppendLine($"            \"{paramVal}\" =>");
-                        if (latest.StatusCode is >= 200 and < 300)
-                        {
-                            var emittedCode = CSharpValueEmitter.Emit(latest.DeserializedResponse, indentLevel: 16, namespaces);
-                            methodsSb.AppendLine($"                {emittedCode},");
-                        }
-                        else
-                        {
-                            methodsSb.AppendLine($"                throw new StubHttpException({latest.StatusCode}, \"{CSharpValueEmitter.EscapeString(latest.ResponseBody ?? "Recorded error response")}\"),");
-                        }
-                    }
-
-                    methodsSb.AppendLine($"            _ => throw new StubNotFoundException($\"No recorded stub for {paramName} '{{{paramName}}}'.\")");
-                    methodsSb.AppendLine("        };");
-                }
-                else
-                {
-                    if (methodCalls.Count > 1)
-                    {
-                        methodsSb.AppendLine($"        // Note: {methodCalls.Count} interactions recorded for this endpoint; returning latest. Override {hookMethodName} for custom scenario dispatch.");
-                    }
-
                     var latest = methodCalls.Last();
                     if (isVoidReturn)
                     {
@@ -204,6 +166,100 @@ public static class CSharpStubGenerator
                     {
                         methodsSb.AppendLine($"        throw new StubHttpException({latest.StatusCode}, \"{CSharpValueEmitter.EscapeString(latest.ResponseBody ?? "Recorded error response")}\");");
                     }
+                }
+                else if (parameters.Length == 1)
+                {
+                    var p = parameters[0];
+                    var mapping = endpoint.Parameters.FirstOrDefault(m => m.ParameterName == p.Name);
+
+                    if (mapping?.Kind == ParameterKind.Body)
+                    {
+                        methodsSb.AppendLine($"        return {p.Name} switch");
+                        methodsSb.AppendLine("        {");
+
+                        var distinctCalls = methodCalls
+                            .GroupBy(c => c.DeserializedRequestBody != null
+                                ? CSharpValueEmitter.EmitPattern(c.DeserializedRequestBody, namespaces)
+                                : (c.RequestBody ?? "null"))
+                            .ToList();
+
+                        foreach (var group in distinctCalls)
+                        {
+                            var pattern = group.Key;
+                            var latest = group.Last();
+
+                            methodsSb.AppendLine($"            {pattern} =>");
+                            AppendInteractionBranch(methodsSb, latest, 16, namespaces);
+                        }
+
+                        methodsSb.AppendLine($"            _ => throw new StubNotFoundException($\"No recorded stub for {p.Name} '{{{p.Name}}}'.\")");
+                        methodsSb.AppendLine("        };");
+                    }
+                    else if (mapping?.Kind == ParameterKind.Query)
+                    {
+                        methodsSb.AppendLine($"        return ({p.Name}?.ToLowerInvariant()) switch");
+                        methodsSb.AppendLine("        {");
+
+                        var distinctCalls = methodCalls
+                            .GroupBy(c => c.QueryParameters.TryGetValue(mapping.TargetName, out var v) ? v.ToLowerInvariant() : "")
+                            .ToList();
+
+                        foreach (var group in distinctCalls)
+                        {
+                            var paramVal = group.Key;
+                            var latest = group.Last();
+
+                            methodsSb.AppendLine($"            \"{paramVal}\" =>");
+                            AppendInteractionBranch(methodsSb, latest, 16, namespaces);
+                        }
+
+                        methodsSb.AppendLine($"            _ => throw new StubNotFoundException($\"No recorded stub for {p.Name} '{{{p.Name}}}'.\")");
+                        methodsSb.AppendLine("        };");
+                    }
+                    else
+                    {
+                        var targetName = mapping?.TargetName ?? p.Name!;
+                        methodsSb.AppendLine($"        return ({p.Name}?.ToLowerInvariant()) switch");
+                        methodsSb.AppendLine("        {");
+
+                        var distinctCalls = methodCalls
+                            .GroupBy(c => c.PathParameters.TryGetValue(targetName, out var v) ? v.ToLowerInvariant() : "")
+                            .ToList();
+
+                        foreach (var group in distinctCalls)
+                        {
+                            var paramVal = group.Key;
+                            var latest = group.Last();
+
+                            methodsSb.AppendLine($"            \"{paramVal}\" =>");
+                            AppendInteractionBranch(methodsSb, latest, 16, namespaces);
+                        }
+
+                        methodsSb.AppendLine($"            _ => throw new StubNotFoundException($\"No recorded stub for {p.Name} '{{{p.Name}}}'.\")");
+                        methodsSb.AppendLine("        };");
+                    }
+                }
+                else
+                {
+                    var tupleExpr = "(" + string.Join(", ", parameters.Select(p => p.ParameterType == typeof(string) ? $"{p.Name}?.ToLowerInvariant()" : p.Name)) + ")";
+                    methodsSb.AppendLine($"        return {tupleExpr} switch");
+                    methodsSb.AppendLine("        {");
+
+                    var distinctCalls = methodCalls
+                        .GroupBy(c => BuildTuplePattern(c, method, endpoint, namespaces))
+                        .ToList();
+
+                    foreach (var group in distinctCalls)
+                    {
+                        var tuplePattern = group.Key;
+                        var latest = group.Last();
+
+                        methodsSb.AppendLine($"            {tuplePattern} =>");
+                        AppendInteractionBranch(methodsSb, latest, 16, namespaces);
+                    }
+
+                    methodsSb.AppendLine("            _ => throw new StubNotFoundException(\"No recorded stub matching the provided request parameters.\")");
+                    methodsSb.AppendLine("        };");
                 }
             }
 
@@ -265,5 +321,77 @@ public static class CSharpStubGenerator
         classSb.AppendLine("}");
 
         return classSb.ToString();
+    }
+
+    private static void AppendInteractionBranch(
+        StringBuilder sb,
+        RecordedInteraction latest,
+        int indentLevel,
+        ISet<string> namespaces)
+    {
+        var indent = new string(' ', indentLevel);
+        if (latest.StatusCode is >= 200 and < 300)
+        {
+            var emittedCode = CSharpValueEmitter.Emit(latest.DeserializedResponse, indentLevel, namespaces);
+            sb.AppendLine($"{indent}{emittedCode},");
+        }
+        else
+        {
+            sb.AppendLine($"{indent}throw new StubHttpException({latest.StatusCode}, \"{CSharpValueEmitter.EscapeString(latest.ResponseBody ?? "Recorded error response")}\"),");
+        }
+    }
+
+    private static string BuildTuplePattern(
+        RecordedInteraction interaction,
+        MethodInfo method,
+        ContractEndpoint endpoint,
+        ISet<string> namespaces)
+    {
+        var elements = new List<string>();
+        foreach (var p in method.GetParameters())
+        {
+            var mapping = endpoint.Parameters.FirstOrDefault(m => m.ParameterName == p.Name);
+            if (mapping?.Kind == ParameterKind.Path)
+            {
+                var targetName = mapping.TargetName;
+                if (interaction.PathParameters.TryGetValue(targetName, out var v))
+                {
+                    elements.Add($"\"{CSharpValueEmitter.EscapeString(v.ToLowerInvariant())}\"");
+                }
+                else
+                {
+                    elements.Add("_");
+                }
+            }
+            else if (mapping?.Kind == ParameterKind.Query)
+            {
+                var targetName = mapping.TargetName;
+                if (interaction.QueryParameters.TryGetValue(targetName, out var v))
+                {
+                    elements.Add($"\"{CSharpValueEmitter.EscapeString(v.ToLowerInvariant())}\"");
+                }
+                else
+                {
+                    elements.Add("_");
+                }
+            }
+            else if (mapping?.Kind == ParameterKind.Body)
+            {
+                if (interaction.DeserializedRequestBody != null)
+                {
+                    elements.Add(CSharpValueEmitter.EmitPattern(interaction.DeserializedRequestBody, namespaces));
+                }
+                else
+                {
+                    elements.Add("_");
+                }
+            }
+            else
+            {
+                elements.Add("_");
+            }
+        }
+
+        return $"({string.Join(", ", elements)})";
     }
 }
