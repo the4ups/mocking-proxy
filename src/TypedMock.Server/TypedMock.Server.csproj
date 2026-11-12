@@ -5,11 +5,31 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <IsPackable>true</IsPackable>
+
+    <!-- .NET Global Tool & Package Metadata -->
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>typedmock</ToolCommandName>
+    <PackageId>TypedMock.Server</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>TypedMock Contributors</Authors>
+    <Company>TypedMock</Company>
+    <Title>TypedMock.Server - Standalone Contract-Driven Mock Proxy</Title>
+    <Description>Standalone CLI contract-driven mock proxy server for .NET microservices.</Description>
+    <PackageTags>mock;proxy;cli;dotnet-tool;wiremock;restease</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/serge/MockingProxyProofOfConcept</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\ExternalService.Contracts\ExternalService.Contracts.csproj" />
     <ProjectReference Include="..\TypedMock.Core\TypedMock.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>

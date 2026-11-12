@@ -1,0 +1,12 @@
+**/.git
+**/.vs
+**/.idea
+**/.vscode
+**/bin
+**/obj
+**/TestResults
+**/GeneratedStubs
+*.user
+*.suo
+*.log
+tests/

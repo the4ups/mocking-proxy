@@ -4,6 +4,24 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+
+    <!-- NuGet Package Metadata -->
+    <PackageId>TypedMock.Core</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>TypedMock Contributors</Authors>
+    <Company>TypedMock</Company>
+    <Title>TypedMock.Core - Contract-Driven Mock Proxy</Title>
+    <Description>Contract-driven mock proxy and C# stub generator for .NET microservices using RestEase contracts.</Description>
+    <PackageTags>mock;mocking;proxy;wiremock;restease;stubs;integration-tests;testing;contract-testing;aspnetcore</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/serge/MockingProxyProofOfConcept</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
   </PropertyGroup>
 
   <ItemGroup>
@@ -12,6 +30,10 @@
 
   <ItemGroup>
     <PackageReference Include="RestEase" Version="1.6.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>

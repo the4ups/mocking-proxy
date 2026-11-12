@@ -1,0 +1,21 @@
+services:
+  typedmock:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: typedmock:latest
+    container_name: typedmock-server
+    ports:
+      - "5050:5050"
+    volumes:
+      # Mount external compiled contract DLLs for dynamic contract discovery
+      - ./contracts:/contracts:ro
+      # Mount destination folder where generated C# stubs are saved
+      - ./GeneratedStubs:/GeneratedStubs:rw
+    # Example: Record mode forwarding to an upstream host service
+    # command: ["--mode=Record", "--port=5050", "--target=http://host.docker.internal:5001", "--out-dir=/GeneratedStubs", "--contracts-dir=/contracts"]
+    # Default: Replay mode
+    command: ["--mode=Replay", "--port=5050", "--out-dir=/GeneratedStubs", "--contracts-dir=/contracts"]
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+    restart: unless-stopped

@@ -189,7 +189,7 @@ dotnet run --project src/SampleExternalService -- 5001
 ### Шаг 2: Запуск TypedMock в режиме Record (Запись трафика)
 Во втором окне терминала запускаем TypedMock-прокси:
 ```bash
-dotnet run --project src/TypedMock.Server -- --mode=Record --port=5050 --target=http://localhost:5001 --fixtures=./demo-fixtures
+dotnet run --project src/TypedMock.Server -- --mode=Record --port=5050 --target=http://localhost:5001 --out-dir=./GeneratedStubs
 ```
 TypedMock слушает на `http://localhost:5050`, регистрирует контракт `IWeatherApi` и готов прозрачно проксировать запросы на порт `5001`.
 
@@ -209,23 +209,21 @@ dotnet run --project src/SampleClientApp -- http://localhost:5050
 1. Клиент запрашивает данные о погоде (`London`, `Paris` и т.д.).
 2. TypedMock перехватывает запрос, сопоставляет его с `IWeatherApi.GetForecastByCityAsync`.
 3. Пересылает запрос в настоящий сервис на порту 5001.
-4. Получает ответ, **валидирует его через DTO**, отдает клиенту и сохраняет в каталог `./demo-fixtures`.
+4. Получает ответ, **валидирует его через DTO** (защита от runtime schema drift), отдает клиенту и сохраняет взаимодействие.
+5. Нажмите `Ctrl+C` во втором терминале — сервер завершит работу и автоматически сгенерирует строго типизированный C# контроллер в `./GeneratedStubs/WeatherApiStubController.cs`.
 
-Загляните в папку `./demo-fixtures/IWeatherApi/GetForecastByCityAsync/` — там появились типизированные JSON-файлы с реальными ответами!
+Загляните в файл `./GeneratedStubs/WeatherApiStubController.cs` — там появился готовый компилируемый C# контроллер со строгим pattern matching по всем записанным маршрутам и телам запросов, без промежуточных JSON!
 
 ---
 
-### Шаг 4: Режим Replay (Внешний сервис отключен!)
+### Шаг 4: Использование сгенерированного стаба и режим Replay
 1. Остановите реальный сервис в первом терминале (`Ctrl+C`). Теперь внешнего API нет!
-2. Перезапустите TypedMock в режиме **Replay**:
+2. Сгенерированный контроллер `WeatherApiStubController.cs` можно напрямую подключить к тестам или запустить через встроенный `StubServerHost.StartAsync(typeof(WeatherApiStubController), port: 5050)`.
+3. Также можно запустить TypedMock в режиме **Replay**:
 ```bash
-dotnet run --project src/TypedMock.Server -- --mode=Replay --port=5050 --fixtures=./demo-fixtures
+dotnet run --project src/TypedMock.Server -- --mode=Replay --port=5050
 ```
-3. Снова запустите клиент:
-```bash
-dotnet run --project src/SampleClientApp -- http://localhost:5050
-```
-**Результат:** Клиент отработал штатно и получил все данные, хотя реальный бэкенд выключен.
+Клиентские приложения или автотесты смогут продолжать работу против стаба без запущенного реального бэкенда.
 
 ---
 
@@ -238,18 +236,19 @@ curl -H "X-Mock-Scenario: StormWarning" http://localhost:5050/weatherforecast/Lo
 ```bash
 curl "http://localhost:5050/weatherforecast/London?__scenario=StormWarning"
 ```
-Сервер автоматически вернет фикстуру из файла `StormWarning.json`. Если сценарий не найден, он вернет дефолтный ответ или 404 с понятным описанием доступных сценариев.
+Сервер автоматически выбирает правило, настроенное для данного сценария (через Fluent C# сетап или точку расширения `On<Method>Async` в сгенерированном стабе).
 
 ---
 
-### Шаг 6: Демонстрация защиты от Schema Drift (Ломаем контракт)
-Откройте файл `./demo-fixtures/IWeatherApi/GetForecastByCityAsync/city_London.json` и испортите тип данных (например, сделайте `"temperatureC": "NotANumber"` или передайте невалидный формат даты).
+### Шаг 6: Демонстрация защиты от Schema Drift
+В TypedMock защита от устаревания работает на двух уровнях:
+1. **Compile-Time Drift (в сгенерированных C# стабах):**
+Если команда сервиса-зависимости изменила свой NuGet-пакет контракта (удалила метод, переименовала свойство в DTO), ваш проект со стабами просто **не скомпилируется** (`CS0535` / `CS1061`). Ошибка выявляется мгновенно на `dotnet build` до любого запуска тестов!
+2. **Runtime Drift (в Record-прокси):**
+Если внешний сервис вернет ответ, нарушающий типы полей в DTO (например, `temperatureC: "NotANumber"`), прокси немедленно выбросит `ContractValidationException`:
+> *"Schema drift detected! Response payload does not match contract DTO WeatherForecastDto."*
 
-Попробуйте запустить клиент или тест:
-- TypedMock **откажется отдавать невалидный ответ** и вернет понятную ошибку `ContractValidationException`:
-  > *"Schema drift detected! Fixture payload does not match contract DTO WeatherForecastDto."*
-
-Это гарантирует, что устаревшие моки никогда не просочатся незамеченными.
+Это гарантирует, что устаревшие или поврежденные данные никогда не просочатся незамеченными.
 
 ---
 
@@ -310,9 +309,11 @@ public async Task MyIntegrationTest()
 - На стенде мок-сервер разворачивается рядом с тестируемым микросервисом. В конфигурации сервиса `WeatherApi__BaseUrl` просто переключается на URL мока.
 - Тест-раннеры передают нужный заголовок `X-Mock-Scenario: <Name>` в запросах.
 
-### Вопрос 3: «Зачем нужен генератор C# стабов, если есть фикстуры?»
-- Фикстуры удобны для стендов и QA, где не хочется пересобирать код.
-- Сгенерированные C# стабы идеальны для репозитория самого сервиса: разработчики получают эталонный фейковый контроллер, который гарантированно компилируется только до тех пор, пока соблюдается контракт интерфейса.
+### Вопрос 3: «Зачем компилировать C# стабы контроллеров вместо сохранения файлов маппингов?»
+- Сгенерированные C# стабы контроллеров компилируются вместе с автотестами: любые изменения DTO и сигнатур методов проверяются на этапе `dotnet build`.
+- Полная поддержка IDE: навигация, автодополнение IntelliSense, безопасный рефакторинг по `F2`.
+- В тестах контроллеры могут вызываться in-memory без HTTP-сокетов, обеспечивая максимальную скорость выполнения.
+- На стендах стаб-контроллеры легко поднимаются через легковесный встроенный Kestrel (`StubServerHost`).
 
 ---
 

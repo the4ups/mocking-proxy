@@ -42,7 +42,7 @@ flowchart LR
         subgraph RecordFlow["Record Mode (Proxy)"]
             Proxy["Forward to Real API"]
             Rec["Capture & Validate against DTO"]
-            Store["Save Typed Fixtures"]
+            Store["Generate & Save C# Stubs\n(*StubController.cs)"]
         end
 
         subgraph ReplayFlow["Replay Mode (Mock)"]
@@ -73,8 +73,7 @@ flowchart LR
 - [`src/TypedMock.Core`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/src/TypedMock.Core): The core engine:
   - `RestEaseContractScanner`: Discovers endpoints, parameters, and DTO types from interfaces.
   - `RoutePatternMatcher`: Matches incoming HTTP requests to contract methods.
-  - `TypedFixtureStore`: Manages typed JSON fixtures and validates them against DTOs.
-  - `HttpProxyForwarder`: Reverse proxies requests to real systems and records typed interactions.
+  - `HttpProxyForwarder`: Reverse proxies requests to real systems, validates payloads against contract DTOs, and records typed interactions.
   - `TypedMockServer`: Embedded or standalone Kestrel host supporting Record, Replay, and Hybrid modes.
   - `Generators`: Code generation engine (`CSharpStubGenerator`, `CSharpValueEmitter`, `RecordedInteraction`) transforming captured traffic into strongly-typed C# ASP.NET Core controllers.
   - `Hosting`: Embedded test server harness (`StubServerHost`, `StubExceptionMiddleware`) for running generated controllers over HTTP.
@@ -90,11 +89,11 @@ flowchart LR
 dotnet test
 ```
 The test suite validates:
-- **Scenario 1:** Recording traffic through the proxy from the real service and auto-generating validated fixtures.
+- **Scenario 1:** Recording traffic through the proxy from the real service and auto-generating strongly-typed C# stubs.
 - **Scenario 2:** Replaying traffic when the real external service is completely offline.
-- **Scenario 3:** Creating new test cases in C# without touch raw JSON (`mockServer.For<IWeatherApi>().Setup(...)`).
+- **Scenario 3:** Creating new test cases in C# without touching raw JSON (`mockServer.For<IWeatherApi>().Setup(...)`).
 - **Scenario 4:** Simulating external service errors (e.g. HTTP 500).
-- **Scenario 5:** Catching contract drift (broken/corrupted fixtures fail validation immediately).
+- **Scenario 5:** Catching contract drift (schema mismatch between upstream response and contract DTO fails validation immediately with `ContractValidationException`).
 - **Scenario 6:** Recording and replaying POST requests with body payloads.
 - **C# Stub Code Generation:** Recording real traffic to emit strongly-typed ASP.NET Core controllers, in-memory Roslyn compilation, remote HTTP hosting via `StubServerHost`, manual subclass scenario overriding, compile-time contract drift detection (`CS0535`), deterministic request body pattern matching, and deduplication of repeated calls.
 
@@ -158,15 +157,46 @@ GET /weatherforecast/London HTTP/1.1
 Host: mock-server:5050
 X-Mock-Scenario: StormWarning
 ```
-TypedMock will automatically resolve the fixture matching `IWeatherApi/GetForecastByCityAsync/StormWarning.json`.
+TypedMock will resolve the mock scenario rule registered in code or invoke the overridden scenario hook in the generated C# stub controller.
+
+---
+
+## 📦 Packaging & Docker
+
+### 1. NuGet Packages
+
+The solution produces two packages:
+- **`TypedMock.Core`**: Class library for embedding inside integration tests, xUnit/NUnit suites, and WebApplicationFactory harnesses.
+- **`TypedMock.Server`**: Standalone proxy CLI and .NET Global Tool (`typedmock`).
+
+```bash
+# Pack NuGet packages
+dotnet pack src/TypedMock.Core/TypedMock.Core.csproj -c Release
+dotnet pack src/TypedMock.Server/TypedMock.Server.csproj -c Release
+
+# Install standalone CLI locally as a global tool
+dotnet tool install -g --add-source ./src/TypedMock.Server/bin/Release TypedMock.Server
+```
+
+### 2. Docker & Docker Compose
+
+A multi-stage `Dockerfile` and `docker-compose.yml` are provided for containerized test stands:
+
+```bash
+# Build Docker image
+docker build -t typedmock:latest .
+
+# Run with docker compose (mounts ./contracts and ./GeneratedStubs)
+docker compose up -d
+
+# Check diagnostic endpoint
+curl http://localhost:5050/__typedmock/status
+```
 
 ---
 
 ## 📚 In-Depth Guides
 
-- [**How to Discover Contracts in Production**](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/docs/CONTRACT_DISCOVERY_IN_PRODUCTION.md): Details the 3 production deployment patterns: Dynamic Directory Scanning (`--contracts-dir`), Convention-based AppDomain scanning, and Dynamic NuGet Feed pulling.
-- [**Adapting Contract-Driven Mocking to Java Infrastructure**](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/docs/JAVA_ECOSYSTEM_INTEGRATION.md): Explains how RestEase/NuGet concepts map to Java (OpenFeign, `@HttpExchange`, Maven `.jar`), and details the 3 strategies for Java integration (OpenAPI universal bridge, contract-first generation, and pure Java-native tooling).
-- [**Setting Up Scenario Fixtures on Test Stands for QA**](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/docs/TEST_STAND_SCENARIO_SETUP.md): Explains 6 practical architectures for manual testing engineers using browser web apps (QA dev toolbars with cookie propagation, URL query params, TypedMock Admin UI, test personas, input conventions, and OpenTelemetry baggage).
-- [**Authoring C# Typed Fixtures vs. Raw JSON**](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/docs/CSHARP_TYPED_FIXTURES.md): Details 3 patterns for authoring fixtures in C# with compile-time type safety (in-memory test setups, compiled fixture DLLs for standalone servers, and code-first JSON generator).
+- [**WALKTHROUGH.md**](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/WALKTHROUGH.md): Пошаговое руководство на русском языке для обсуждения с командой, аргументы за внедрение, живое демо и часто задаваемые вопросы.
 - [**Contract-Driven C# Code-Generated Stub Controllers**](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/docs/CSHARP_CODEGEN_STUB_CONTROLLERS.md): Complete guide to recording traffic and emitting version-controlled C# ASP.NET Core controllers with baseline switch dispatches, manual subclass scenario hooks, in-memory unit testing, and compile-time drift detection.
 

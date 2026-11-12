@@ -39,6 +39,14 @@ dotnet run --project src/SampleExternalService -- 5001
 
 # Run Sample Client App
 dotnet run --project src/SampleClientApp -- http://localhost:5050
+
+# Pack NuGet packages (Core library and Global Tool)
+dotnet pack src/TypedMock.Core/TypedMock.Core.csproj -c Release
+dotnet pack src/TypedMock.Server/TypedMock.Server.csproj -c Release
+
+# Docker build and compose
+docker build -t typedmock:latest .
+docker compose up -d
 ```
 
 ## Architecture & Boundaries
