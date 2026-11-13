@@ -28,6 +28,12 @@ public class TypedMockOptions
     /// </summary>
     public string OutputDirectory { get; set; } = Path.Combine(AppContext.BaseDirectory, "GeneratedStubs");
 
+    /// <summary>
+    /// Namespace for generated C# stub controllers.
+    /// Defaults to "Generated.Stubs".
+    /// </summary>
+    public string StubNamespace { get; set; } = "Generated.Stubs";
+
     public int Port { get; set; } = 0; // 0 = dynamic available port
     public string ScenarioHeader { get; set; } = "X-Mock-Scenario";
 

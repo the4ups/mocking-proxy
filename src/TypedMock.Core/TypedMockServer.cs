@@ -5,9 +5,14 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ApplicationParts;
+using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using TypedMock.Core.Contracts;
 using TypedMock.Core.Generators;
+using TypedMock.Core.Hosting;
 using TypedMock.Core.Matching;
 using TypedMock.Core.Models;
 using TypedMock.Core.Proxy;
@@ -25,6 +30,7 @@ public class TypedMockServer : IAsyncDisposable
     private readonly TypedMockOptions _options;
     private readonly List<ContractEndpoint> _registeredEndpoints = [];
     private readonly List<ProgrammaticMockRule> _programmaticRules = [];
+    private readonly List<Type> _registeredStubControllers = [];
     private readonly HttpClient _upstreamClient = new(SharedHandler, disposeHandler: false);
     private HttpProxyForwarder? _forwarder;
     private WebApplication? _app;
@@ -39,6 +45,33 @@ public class TypedMockServer : IAsyncDisposable
     public MockMode Mode => _options.Mode;
     public IReadOnlyList<RecordedInteraction> RecordedInteractions => _forwarder?.RecordedInteractions ?? [];
     public IReadOnlyList<ContractEndpoint> RegisteredEndpoints => _registeredEndpoints.AsReadOnly();
+    public IReadOnlyList<Type> RegisteredStubControllers => _registeredStubControllers.AsReadOnly();
+
+    public TypedMockServer RegisterStubController(Type controllerType)
+    {
+        if (!typeof(ControllerBase).IsAssignableFrom(controllerType))
+        {
+            throw new ArgumentException($"Type '{controllerType.Name}' must inherit from ControllerBase.", nameof(controllerType));
+        }
+
+        if (!_registeredStubControllers.Contains(controllerType))
+        {
+            _registeredStubControllers.Add(controllerType);
+        }
+        return this;
+    }
+
+    public TypedMockServer RegisterStubController<TController>() where TController : class =>
+        RegisterStubController(typeof(TController));
+
+    public TypedMockServer RegisterStubControllers(IEnumerable<Type> controllerTypes)
+    {
+        foreach (var type in controllerTypes)
+        {
+            RegisterStubController(type);
+        }
+        return this;
+    }
 
     public string GenerateStubSourceCode<TContract>(CSharpStubGeneratorOptions? options = null) where TContract : class
     {
@@ -170,14 +203,58 @@ public class TypedMockServer : IAsyncDisposable
             EnvironmentName = "Development"
         });
 
+        builder.Services.AddLogging(logging => logging.AddConsole());
         builder.Services.AddRouting();
+
+        if (_registeredStubControllers.Count > 0)
+        {
+            var mvcBuilder = builder.Services.AddControllers();
+            var assemblies = _registeredStubControllers.Select(t => t.Assembly).Distinct();
+            foreach (var asm in assemblies)
+            {
+                mvcBuilder.AddApplicationPart(asm);
+            }
+
+            mvcBuilder.ConfigureApplicationPartManager(manager =>
+            {
+                manager.FeatureProviders.Add(new ExplicitControllerFeatureProvider(_registeredStubControllers));
+            });
+
+            mvcBuilder.AddControllersAsServices();
+        }
+
         builder.WebHost.UseKestrel(k =>
         {
             k.Listen(IPAddress.Loopback, _options.Port);
         });
 
         _app = builder.Build();
-        _app.Run(HandleRequestAsync);
+
+        // 1. Exception handling middleware
+        _app.UseMiddleware<StubExceptionMiddleware>();
+
+        // 2. Scenario context middleware
+        _app.Use(async (context, next) =>
+        {
+            var scenarioName = context.Request.Headers[_options.ScenarioHeader].FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(scenarioName))
+            {
+                scenarioName = context.Request.Query["__scenario"].FirstOrDefault();
+            }
+            scenarioName ??= "default";
+            context.Items["TypedMock.Scenario"] = scenarioName;
+
+            await next(context);
+        });
+
+        // 3. Map MVC Controllers if any registered
+        if (_registeredStubControllers.Count > 0)
+        {
+            _app.MapControllers();
+        }
+
+        // 4. Fallback handler for unmatched routes, programmatic rules, and admin endpoints
+        _app.MapFallback(HandleRequestAsync);
 
         await _app.StartAsync();
 
@@ -189,7 +266,10 @@ public class TypedMockServer : IAsyncDisposable
     {
         if (!string.IsNullOrWhiteSpace(_options.OutputDirectory) && RecordedInteractions.Count > 0)
         {
-            await SaveAllStubsAsync(_options.OutputDirectory);
+            await SaveAllStubsAsync(_options.OutputDirectory, new CSharpStubGeneratorOptions
+            {
+                Namespace = _options.StubNamespace
+            });
         }
 
         if (_app != null)
@@ -224,18 +304,17 @@ public class TypedMockServer : IAsyncDisposable
                 outputDirectory = _options.OutputDirectory,
                 registeredContracts = _registeredEndpoints.Select(e => e.InterfaceType.Name).Distinct().ToList(),
                 registeredEndpoints = _registeredEndpoints.Select(e => e.ToString()).ToList(),
+                registeredStubControllers = _registeredStubControllers.Select(t => t.Name).ToList(),
                 recordedInteractionsCount = RecordedInteractions.Count
             });
             return;
         }
 
         // Scenario resolution
-        var scenarioName = context.Request.Headers[_options.ScenarioHeader].FirstOrDefault();
-        if (string.IsNullOrWhiteSpace(scenarioName))
-        {
-            scenarioName = context.Request.Query["__scenario"].FirstOrDefault();
-        }
-        scenarioName ??= "default";
+        var scenarioName = context.Items["TypedMock.Scenario"] as string
+            ?? context.Request.Headers[_options.ScenarioHeader].FirstOrDefault()
+            ?? context.Request.Query["__scenario"].FirstOrDefault()
+            ?? "default";
 
         // Route Matching
         ContractEndpoint? matchedEndpoint = null;
@@ -333,5 +412,19 @@ public class TypedMockServer : IAsyncDisposable
             requestedScenario = scenarioName,
             hint = "Record this endpoint first into a C# stub controller or configure a scenario rule using .For<T>().Setup(...)."
         });
+    }
+}
+
+internal class ExplicitControllerFeatureProvider(IReadOnlyList<Type> allowedControllers) : IApplicationFeatureProvider<ControllerFeature>
+{
+    public void PopulateFeature(IEnumerable<ApplicationPart> parts, ControllerFeature feature)
+    {
+        for (var i = feature.Controllers.Count - 1; i >= 0; i--)
+        {
+            if (!allowedControllers.Contains(feature.Controllers[i].AsType()))
+            {
+                feature.Controllers.RemoveAt(i);
+            }
+        }
     }
 }

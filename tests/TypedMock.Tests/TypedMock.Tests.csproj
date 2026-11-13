@@ -26,6 +26,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\ExternalService.Contracts\ExternalService.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\ExternalService.Stubs\ExternalService.Stubs.csproj" />
     <ProjectReference Include="..\..\src\TypedMock.Core\TypedMock.Core.csproj" />
     <ProjectReference Include="..\..\src\SampleExternalService\SampleExternalService.csproj" />
     <ProjectReference Include="..\..\src\SampleClientApp\SampleClientApp.csproj" />

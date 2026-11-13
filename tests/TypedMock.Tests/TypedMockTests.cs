@@ -1,3 +1,4 @@
+using System.Net.Http.Json;
 using System.Reflection;
 using ExternalService.Contracts;
 using FluentAssertions;
@@ -5,6 +6,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.Extensions.DependencyInjection;
@@ -97,6 +99,7 @@ public class TypedMockTests
         var assembly = CompileSourceToAssembly(sourceCode);
         var controllerType = assembly.GetType("Generated.Stubs.WeatherApiStubController")!;
 
+        // Test StubServerHost
         await using var stubHost = await StubServerHost.StartAsync(controllerType, port: 0);
         var stubUrl = StubServerHost.GetServerUrl(stubHost);
         var client = RestClient.For<IWeatherApi>(stubUrl);
@@ -104,6 +107,16 @@ public class TypedMockTests
         var london = await client.GetForecastByCityAsync("London");
         london.City.Should().Be("London");
         london.TemperatureC.Should().Be(12);
+
+        // Test TypedMockServer Unified Pipeline with the compiled stub controller
+        await using var unifiedServer = new TypedMockServer(new TypedMockOptions { Port = 0, Mode = MockMode.Replay });
+        unifiedServer.RegisterStubController(controllerType);
+        await unifiedServer.StartAsync();
+
+        var unifiedClient = RestClient.For<IWeatherApi>(unifiedServer.BaseUrl);
+        var unifiedParis = await unifiedClient.GetForecastByCityAsync("Paris");
+        unifiedParis.City.Should().Be("Paris");
+        unifiedParis.TemperatureC.Should().Be(18);
 
         var paris = await client.GetForecastByCityAsync("Paris");
         paris.City.Should().Be("Paris");
@@ -371,6 +384,92 @@ public class TypedMockTests
     }
 
     // =========================================================================
+    // 3.5. STUB CONTROLLER HOSTING & DISPATCH PRECEDENCE TESTS
+    // =========================================================================
+
+    [Fact]
+    public void RegisterStubController_RejectsNonControllerType()
+    {
+        var server = new TypedMockServer();
+        var act = () => server.RegisterStubController(typeof(string));
+        act.Should().Throw<ArgumentException>()
+            .WithMessage("*must inherit from ControllerBase*");
+    }
+
+    [Fact]
+    public async Task UnifiedPipeline_HostsStubController_AndServesTraffic()
+    {
+        await using var mockServer = new TypedMockServer(new TypedMockOptions { Port = 0, Mode = MockMode.Replay });
+        mockServer.RegisterStubController<TestWeatherStubController>();
+        await mockServer.StartAsync();
+
+        using var httpClient = new HttpClient { BaseAddress = new Uri(mockServer.BaseUrl) };
+        var forecastsResp = await httpClient.GetAsync("/weather-test");
+        forecastsResp.IsSuccessStatusCode.Should().BeTrue();
+        var forecasts = await forecastsResp.Content.ReadFromJsonAsync<List<WeatherForecastDto>>();
+        forecasts.Should().ContainSingle(f => f.City == "ControllerCity");
+
+        var londonResp = await httpClient.GetAsync("/weather-test/ControllerLondon");
+        londonResp.IsSuccessStatusCode.Should().BeTrue();
+        var london = await londonResp.Content.ReadFromJsonAsync<WeatherForecastDto>();
+        london!.City.Should().Be("ControllerLondon");
+        london.TemperatureC.Should().Be(19);
+
+        // Status diagnostic endpoint includes registeredStubControllers
+        var statusResp = await httpClient.GetAsync("/__typedmock/status");
+        var statusJson = await statusResp.Content.ReadAsStringAsync();
+        statusJson.Should().Contain(nameof(TestWeatherStubController));
+    }
+
+    [Fact]
+    public async Task RequestDispatchPrecedence_ControllerTakesPrecedenceOverProgrammaticRule()
+    {
+        await using var mockServer = new TypedMockServer(new TypedMockOptions { Port = 0, Mode = MockMode.Replay });
+        mockServer.RegisterStubController<TestWeatherStubController>();
+
+        // Programmatic rule on a DIFFERENT contract not handled by TestWeatherStubController
+        mockServer.For<IPaymentApi>()
+            .Setup(x => x.GetPaymentAsync("tx_100"))
+            .Returns(new PaymentResponseDto { TransactionId = "tx_100", Status = "Success", Amount = 100m });
+
+        await mockServer.StartAsync();
+
+        using var httpClient = new HttpClient { BaseAddress = new Uri(mockServer.BaseUrl) };
+
+        // Controller route works
+        var weatherResp = await httpClient.GetAsync("/weather-test/ControllerLondon");
+        weatherResp.IsSuccessStatusCode.Should().BeTrue();
+        var weather = await weatherResp.Content.ReadFromJsonAsync<WeatherForecastDto>();
+        weather!.City.Should().Be("ControllerLondon");
+
+        // Fallback to programmatic rule for route not in controller
+        var paymentClient = RestClient.For<IPaymentApi>(mockServer.BaseUrl);
+        var paymentResult = await paymentClient.GetPaymentAsync("tx_100");
+        paymentResult.TransactionId.Should().Be("tx_100");
+
+        // Admin status route works
+        var adminResp = await httpClient.GetAsync("/__typedmock/status");
+        adminResp.IsSuccessStatusCode.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ScenarioContextMiddleware_PropagatesScenarioToContext()
+    {
+        await using var mockServer = new TypedMockServer(new TypedMockOptions { Port = 0, Mode = MockMode.Replay });
+        mockServer.RegisterStubController<ScenarioInspectingStubController>();
+        await mockServer.StartAsync();
+
+        using var httpClient = new HttpClient { BaseAddress = new Uri(mockServer.BaseUrl) };
+        httpClient.DefaultRequestHeaders.Add("X-Mock-Scenario", "CustomScenario");
+
+        var response = await httpClient.GetAsync("/scenario-inspect/AnyCity");
+        response.IsSuccessStatusCode.Should().BeTrue();
+        var dto = await response.Content.ReadFromJsonAsync<WeatherForecastDto>();
+        dto.Should().NotBeNull();
+        dto!.Summary.Should().Be("CustomScenario");
+    }
+
+    // =========================================================================
     // 4. CONTRACT DRIFT TESTS (COMPILE-TIME & RUNTIME)
     // =========================================================================
 
@@ -501,5 +600,54 @@ public class TypedMockTests
 
         ms.Seek(0, SeekOrigin.Begin);
         return Assembly.Load(ms.ToArray());
+    }
+}
+
+[ApiController]
+[Route("weather-test")]
+public class TestWeatherStubController : ControllerBase
+{
+    [HttpGet]
+    public Task<List<WeatherForecastDto>> GetForecastsAsync() =>
+        Task.FromResult(new List<WeatherForecastDto>
+        {
+            new() { City = "ControllerCity", TemperatureC = 20, Summary = "From Controller" }
+        });
+
+    [HttpGet("{city}")]
+    public Task<WeatherForecastDto> GetForecastByCityAsync([FromRoute(Name = "city")] string city)
+    {
+        if (string.Equals(city, "ControllerLondon", StringComparison.OrdinalIgnoreCase))
+        {
+            return Task.FromResult(new WeatherForecastDto
+            {
+                City = "ControllerLondon",
+                TemperatureC = 19,
+                Summary = "Controller Weather"
+            });
+        }
+
+        throw new StubNotFoundException($"No stub for {city}");
+    }
+
+    [HttpPost]
+    public Task<WeatherForecastDto> CreateForecastAsync([FromBody] CreateForecastRequest request) =>
+        Task.FromResult(new WeatherForecastDto { City = request.City, TemperatureC = request.TemperatureC, Summary = request.Summary });
+}
+
+[ApiController]
+[Route("scenario-inspect")]
+public class ScenarioInspectingStubController : ControllerBase
+{
+    [HttpGet("{city}")]
+    public Task<WeatherForecastDto> GetForecastByCityAsync([FromRoute(Name = "city")] string city)
+    {
+        var scenario = HttpContext.Items["TypedMock.Scenario"] as string ?? "none";
+        return Task.FromResult(new WeatherForecastDto
+        {
+            City = city,
+            TemperatureC = 20,
+            Summary = scenario
+        });
     }
 }

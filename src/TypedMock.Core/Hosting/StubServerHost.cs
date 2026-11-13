@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reflection;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -10,13 +11,8 @@ namespace TypedMock.Core.Hosting;
 
 public static class StubServerHost
 {
-    public static async Task<WebApplication> StartAsync(Type controllerType, int port = 0)
+    public static async Task<WebApplication> StartAsync(Assembly assembly, int port = 0)
     {
-        if (!typeof(ControllerBase).IsAssignableFrom(controllerType))
-        {
-            throw new ArgumentException($"Type '{controllerType.Name}' must inherit from ControllerBase.", nameof(controllerType));
-        }
-
         var builder = WebApplication.CreateEmptyBuilder(new WebApplicationOptions
         {
             EnvironmentName = "Development"
@@ -29,7 +25,7 @@ public static class StubServerHost
 
         builder.Services.AddRouting();
         builder.Services.AddControllers()
-            .AddApplicationPart(controllerType.Assembly)
+            .AddApplicationPart(assembly)
             .AddControllersAsServices();
 
         var app = builder.Build();
@@ -38,6 +34,16 @@ public static class StubServerHost
 
         await app.StartAsync();
         return app;
+    }
+
+    public static Task<WebApplication> StartAsync(Type controllerType, int port = 0)
+    {
+        if (!typeof(ControllerBase).IsAssignableFrom(controllerType))
+        {
+            throw new ArgumentException($"Type '{controllerType.Name}' must inherit from ControllerBase.", nameof(controllerType));
+        }
+
+        return StartAsync(controllerType.Assembly, port);
     }
 
     public static Task<WebApplication> StartAsync<TController>(int port = 0) where TController : class =>

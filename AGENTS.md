@@ -40,6 +40,9 @@ dotnet run --project src/SampleExternalService -- 5001
 # Run Sample Client App
 dotnet run --project src/SampleClientApp -- http://localhost:5050
 
+# Run Dedicated Stubs Standalone Host (Local CLI stand)
+dotnet run --project src/ExternalService.Stubs -- 5050
+
 # Pack NuGet packages (Core library and Global Tool)
 dotnet pack src/TypedMock.Core/TypedMock.Core.csproj -c Release
 dotnet pack src/TypedMock.Server/TypedMock.Server.csproj -c Release
@@ -52,8 +55,9 @@ docker compose up -d
 ## Architecture & Boundaries
 
 - `src/ExternalService.Contracts`: Shared interface library (`IWeatherApi`, DTOs). In real use, this represents the external team's published NuGet contract.
+- `src/ExternalService.Stubs`: Dedicated version-controlled stubs project containing recorded ASP.NET Core controllers (e.g. `WeatherApiStubController.cs`). Supports in-memory test hosting, standalone CLI execution (`Program.cs`), and Docker containers (`Dockerfile`).
 - `src/TypedMock.Core`: Core engine library.
-  - Hosts an embedded Kestrel server (`TypedMockServer`).
+  - Hosts an embedded Kestrel server (`TypedMockServer`) with unified routing pipeline: admin diagnostic routes (`/__typedmock/*`) -> scenario context middleware -> registered MVC stub controllers (`RegisterStubController<T>()`) -> programmatic fallback rules (`.For<T>().Setup()`) -> hybrid upstream forwarding -> 404.
   - Scans RestEase contract interfaces via `RestEaseContractScanner` or dynamically in runtime via `DynamicContractLoader` from external assemblies (`.dll`) or directories without compile-time references.
   - Multi-Upstream proxying: dispatches distinct contract routes to independent upstream services and batch-generates separate controllers via `SaveAllStubsAsync`.
   - Modes: `Replay` (programmatic rules / hosted stubs), `Record` (reverse proxy to upstream + in-memory typing), `Hybrid` (replay if matched, fallback to upstream proxy).
@@ -74,4 +78,8 @@ docker compose up -d
   1. `X-Mock-Scenario` request header (configurable via `TypedMockOptions.ScenarioHeader`).
   2. `?__scenario=<name>` query string parameter.
   3. Defaults to `"default"`.
-- **C# Stubs Generation**: Saved to `--out-stubs=<path>` or via `mockServer.SaveStubSourceCodeAsync<TContract>(path)`. Contains deterministic pattern matching for route, query, and request body DTOs without intermediate JSON.
+  When executing inside `TypedMockServer`, the resolved scenario is propagated to `HttpContext.Items["TypedMock.Scenario"]` for stub controller scenario hooks.
+- **C# Stubs Generation & Distribution**:
+  - Saved to `--out-stubs=<path>` / `--out-dir=<path>` or via `mockServer.SaveStubSourceCodeAsync<TContract>(path)`.
+  - Repository-first pipeline: recorded `.cs` files are placed into `src/ExternalService.Stubs/Controllers/`, version-controlled in Git, and verified during regular `dotnet build`.
+  - Replay wiring: host compiled stubs in-process with `mockServer.RegisterStubController<TController>()`, in-memory via `StubServerHost.StartAsync(assembly, port)`, as a standalone CLI host via `dotnet run --project src/ExternalService.Stubs`, or containerized via `src/ExternalService.Stubs/Dockerfile`.

@@ -68,6 +68,7 @@ flowchart LR
 ## 📂 Project Structure
 
 - [`src/ExternalService.Contracts`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/src/ExternalService.Contracts): Simulates the published NuGet contract (`IWeatherApi`, `WeatherForecastDto`, `CreateForecastRequest`).
+- [`src/ExternalService.Stubs`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/src/ExternalService.Stubs): Dedicated repository stubs project containing version-controlled C# ASP.NET Core controllers (e.g. `WeatherApiStubController.cs`). Supports in-memory test execution, standalone CLI hosting, and Docker containers.
 - [`src/SampleExternalService`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/src/SampleExternalService): A sample ASP.NET Core service simulating the real external system.
 - [`src/SampleClientApp`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/src/SampleClientApp): The application calling the service via RestEase `RestClient.For<IWeatherApi>()`.
 - [`src/TypedMock.Core`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/src/TypedMock.Core): The core engine:
@@ -158,6 +159,60 @@ Host: mock-server:5050
 X-Mock-Scenario: StormWarning
 ```
 TypedMock will resolve the mock scenario rule registered in code or invoke the overridden scenario hook in the generated C# stub controller.
+
+---
+
+## 🔄 Repository-First Stub Distribution & Replay Modes
+
+TypedMock adopts a repository-first distribution workflow that bridges recorded traffic with version-controlled C# source code:
+
+```
+[Record Traffic from Real Upstream]
+              │
+              ▼
+[Save C# Controllers to src/ExternalService.Stubs/Controllers/]
+              │
+              ▼
+[Git Commit: Compile Safety, Drift Detection, Pull Request Diff]
+              │
+  ┌───────────┼───────────────────────────┐
+  ▼           ▼                           ▼
+[In-Memory] [Standalone CLI Host]   [Docker Container]
+TypedMockServer   dotnet run --project       docker run -p 5050:5050
+.RegisterStubController<T>()  src/ExternalService.Stubs -- 5050   external-stubs
+```
+
+### 1. Unified Request Pipeline Dispatch Precedence
+`TypedMockServer` executes a unified Kestrel pipeline in Replay mode:
+1. **Admin Diagnostic Endpoints**: `/__typedmock/status` handles management and health queries.
+2. **Scenario Context Middleware**: Extracts scenario from `X-Mock-Scenario` header or `?__scenario=` query parameter and populates `HttpContext.Items["TypedMock.Scenario"]`.
+3. **MVC Stub Controllers**: Endpoints registered via `mockServer.RegisterStubController<TController>()` execute baseline switch pattern matching and scenario hooks.
+4. **Programmatic Rules**: Unmatched endpoints fall through to `.For<TContract>().Setup(...)` mock rules.
+5. **Hybrid Forwarding**: In Hybrid mode, unmatched calls forward to real upstream; otherwise returns HTTP 404.
+
+### 2. Hosting Pre-compiled Stubs in Integration Tests
+```csharp
+await using var mockServer = new TypedMockServer(new TypedMockOptions { Mode = MockMode.Replay });
+mockServer.RegisterStubController<WeatherApiStubController>();
+await mockServer.StartAsync();
+
+var client = RestClient.For<IWeatherApi>(mockServer.BaseUrl);
+var forecast = await client.GetForecastByCityAsync("London");
+```
+
+### 3. Running Stubs as a Standalone CLI Host
+```bash
+dotnet run --project src/ExternalService.Stubs -- 5050
+```
+
+### 4. Running Stubs in Docker
+```bash
+# Build stubs image
+docker build -t external-stubs -f src/ExternalService.Stubs/Dockerfile .
+
+# Run container
+docker run -d -p 5050:5050 external-stubs
+```
 
 ---
 

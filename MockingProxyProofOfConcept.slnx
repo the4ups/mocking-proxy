@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/ExternalService.Contracts/ExternalService.Contracts.csproj" />
+    <Project Path="src/ExternalService.Stubs/ExternalService.Stubs.csproj" />
     <Project Path="src/SampleClientApp/SampleClientApp.csproj" />
     <Project Path="src/SampleExternalService/SampleExternalService.csproj" />
     <Project Path="src/TypedMock.Core/TypedMock.Core.csproj" />
