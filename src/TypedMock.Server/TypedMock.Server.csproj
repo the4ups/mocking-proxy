@@ -24,7 +24,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\ExternalService.Contracts\ExternalService.Contracts.csproj" />
     <ProjectReference Include="..\TypedMock.Core\TypedMock.Core.csproj" />
   </ItemGroup>
 

@@ -187,11 +187,11 @@ dotnet run --project src/SampleExternalService -- 5001
 ---
 
 ### Шаг 2: Запуск TypedMock в режиме Record (Запись трафика)
-Во втором окне терминала запускаем TypedMock-прокси:
+Во втором окне терминала запускаем TypedMock-прокси (указав сборку с контрактами через `--contracts`):
 ```bash
-dotnet run --project src/TypedMock.Server -- --mode=Record --port=5050 --target=http://localhost:5001 --out-dir=./GeneratedStubs
+dotnet run --project src/TypedMock.Server -- --mode=Record --port=5050 --target=http://localhost:5001 --contracts=src/ExternalService.Contracts/bin/Debug/net10.0/ExternalService.Contracts.dll --out-dir=./GeneratedStubs
 ```
-TypedMock слушает на `http://localhost:5050`, регистрирует контракт `IWeatherApi` и готов прозрачно проксировать запросы на порт `5001`.
+TypedMock динамически загружает интерфейсы и DTO из сборки контрактов, слушает на `http://localhost:5050` и готов прозрачно проксировать запросы на порт `5001`.
 
 Проверяем диагностику в браузере или через curl:
 ```bash

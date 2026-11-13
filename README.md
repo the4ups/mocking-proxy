@@ -106,9 +106,9 @@ The test suite validates:
 dotnet run --project src/TypedMock.Server -- --mode=Replay --port=5050
 ```
 
-#### Record Mode (Single Upstream):
+#### Record Mode (Single Upstream with Contract Assembly):
 ```bash
-dotnet run --project src/TypedMock.Server -- --mode=Record --port=5050 --target=http://real-service:5001 --out-dir=./GeneratedStubs
+dotnet run --project src/TypedMock.Server -- --mode=Record --port=5050 --target=http://real-service:5001 --contracts=src/ExternalService.Contracts/bin/Debug/net10.0/ExternalService.Contracts.dll --out-dir=./GeneratedStubs
 ```
 
 #### Record Mode (Multi-Upstream + Dynamic Contract Discovery):

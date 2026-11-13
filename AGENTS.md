@@ -28,10 +28,10 @@ dotnet format --verify-no-changes
 # Run Standalone Mock Proxy (Replay mode)
 dotnet run --project src/TypedMock.Server -- --mode=Replay --port=5050
 
-# Run Standalone Mock Proxy (Record mode, upstream target required, saves C# stub controller on exit)
-dotnet run --project src/TypedMock.Server -- --mode=Record --port=5050 --target=http://localhost:5001 --out-dir=./GeneratedStubs
+# Run Standalone Mock Proxy (Record mode with contract assembly, upstream target required, saves C# stub controller on exit)
+dotnet run --project src/TypedMock.Server -- --mode=Record --port=5050 --target=http://localhost:5001 --contracts=src/ExternalService.Contracts/bin/Debug/net10.0/ExternalService.Contracts.dll --out-dir=./GeneratedStubs
 
-# Run Standalone Mock Proxy (Multi-Upstream + Dynamic Contract Discovery from assemblies)
+# Run Standalone Mock Proxy (Multi-Upstream + Dynamic Contract Discovery from directory)
 dotnet run --project src/TypedMock.Server -- --mode=Record --port=5050 --contracts-dir=./contracts --upstreams="IWeatherApi=http://localhost:5001,IPaymentApi=http://localhost:5002" --out-dir=./GeneratedStubs
 
 # Run Sample External Service (Upstream dependency)

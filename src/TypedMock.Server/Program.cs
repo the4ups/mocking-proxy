@@ -1,4 +1,3 @@
-using ExternalService.Contracts;
 using TypedMock.Core;
 
 Console.WriteLine("==================================================");
@@ -63,23 +62,58 @@ var server = new TypedMockServer(options);
 
 // Dynamic Contract Discovery
 var contractsLoadedCount = 0;
-if (!string.IsNullOrWhiteSpace(contractsFile) && File.Exists(contractsFile))
+if (!string.IsNullOrWhiteSpace(contractsFile))
 {
-    Console.WriteLine($"[Discovery] Loading contracts from assembly: {contractsFile}");
-    server.RegisterContractsFromAssembly(contractsFile);
-    contractsLoadedCount = server.RegisteredEndpoints.Select(e => e.InterfaceType).Distinct().Count();
+    var resolvedFile = ResolvePath(contractsFile);
+    if (File.Exists(resolvedFile))
+    {
+        Console.WriteLine($"[Discovery] Loading contracts from assembly: {resolvedFile}");
+        server.RegisterContractsFromAssembly(resolvedFile);
+        contractsLoadedCount = server.RegisteredEndpoints.Select(e => e.InterfaceType).Distinct().Count();
+    }
+    else
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine($"[Error] Contracts assembly not found: {contractsFile} (resolved: {resolvedFile})");
+        Console.ResetColor();
+    }
 }
-else if (!string.IsNullOrWhiteSpace(contractsDir) && Directory.Exists(contractsDir))
+else if (!string.IsNullOrWhiteSpace(contractsDir))
 {
-    Console.WriteLine($"[Discovery] Scanning contracts directory: {contractsDir}");
-    server.RegisterContractsFromDirectory(contractsDir);
-    contractsLoadedCount = server.RegisteredEndpoints.Select(e => e.InterfaceType).Distinct().Count();
+    var resolvedDir = ResolvePath(contractsDir);
+    if (Directory.Exists(resolvedDir))
+    {
+        Console.WriteLine($"[Discovery] Scanning contracts directory: {resolvedDir}");
+        server.RegisterContractsFromDirectory(resolvedDir);
+        contractsLoadedCount = server.RegisteredEndpoints.Select(e => e.InterfaceType).Distinct().Count();
+    }
+    else
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine($"[Error] Contracts directory not found: {contractsDir} (resolved: {resolvedDir})");
+        Console.ResetColor();
+    }
+}
+else
+{
+    // Check standard conventional contracts directory if present
+    var defaultDir = ResolvePath("contracts");
+    if (Directory.Exists(defaultDir))
+    {
+        Console.WriteLine($"[Discovery] Scanning default contracts directory: {defaultDir}");
+        server.RegisterContractsFromDirectory(defaultDir);
+        contractsLoadedCount = server.RegisteredEndpoints.Select(e => e.InterfaceType).Distinct().Count();
+    }
 }
 
-// Fallback for standalone demo run if no external assemblies provided
 if (contractsLoadedCount == 0)
 {
-    server.RegisterContract<IWeatherApi>();
+    Console.ForegroundColor = ConsoleColor.Yellow;
+    Console.WriteLine("[Warning] No contracts were loaded.");
+    Console.WriteLine("          Provide contracts using:");
+    Console.WriteLine("            --contracts=<path/to/Assembly.dll>");
+    Console.WriteLine("            --contracts-dir=<path/to/contracts_dir>");
+    Console.ResetColor();
 }
 
 await server.StartAsync();
@@ -137,4 +171,28 @@ static string? GetArg(string[] args, string name)
         }
     }
     return null;
+}
+
+static string? ResolvePath(string? path)
+{
+    if (string.IsNullOrWhiteSpace(path)) return null;
+    if (Path.IsPathRooted(path)) return path;
+
+    var cwd = Directory.GetCurrentDirectory();
+    var relativeToCwd = Path.GetFullPath(Path.Combine(cwd, path));
+    if (File.Exists(relativeToCwd) || Directory.Exists(relativeToCwd)) return relativeToCwd;
+
+    var relativeToBase = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, path));
+    if (File.Exists(relativeToBase) || Directory.Exists(relativeToBase)) return relativeToBase;
+
+    // Walk up directory tree to support running via 'dotnet run --project ...' from repository root
+    var dir = new DirectoryInfo(cwd);
+    while (dir != null)
+    {
+        var candidate = Path.GetFullPath(Path.Combine(dir.FullName, path));
+        if (File.Exists(candidate) || Directory.Exists(candidate)) return candidate;
+        dir = dir.Parent;
+    }
+
+    return relativeToCwd;
 }

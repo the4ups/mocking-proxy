@@ -5,7 +5,6 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
 # Copy project files first for optimal layer caching
-COPY ["src/ExternalService.Contracts/ExternalService.Contracts.csproj", "src/ExternalService.Contracts/"]
 COPY ["src/TypedMock.Core/TypedMock.Core.csproj", "src/TypedMock.Core/"]
 COPY ["src/TypedMock.Server/TypedMock.Server.csproj", "src/TypedMock.Server/"]
 
