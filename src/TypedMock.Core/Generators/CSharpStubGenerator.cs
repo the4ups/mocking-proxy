@@ -41,8 +41,7 @@ public static class CSharpStubGenerator
             "System.Globalization",
             "System.Net.Http",
             "System.Threading.Tasks",
-            "Microsoft.AspNetCore.Mvc",
-            "TypedMock.Core.Exceptions"
+            "Microsoft.AspNetCore.Mvc"
         };
 
         if (!string.IsNullOrEmpty(contractType.Namespace))
@@ -201,7 +200,7 @@ public static class CSharpStubGenerator
                     var notFoundMessage = parameters.Length == 1
                         ? $"No recorded stub for {parameters[0].Name} '{{{parameters[0].Name}}}'."
                         : "No recorded stub matching the provided request parameters.";
-                    methodsSb.AppendLine($"            _ => throw new StubNotFoundException($\"{notFoundMessage}\")");
+                    methodsSb.AppendLine($"            _ => throw new KeyNotFoundException($\"{notFoundMessage}\")");
                     methodsSb.AppendLine("        };");
                 }
             }

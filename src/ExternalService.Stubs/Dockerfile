@@ -6,7 +6,6 @@ WORKDIR /src
 
 # Copy project references
 COPY ["src/ExternalService.Contracts/ExternalService.Contracts.csproj", "src/ExternalService.Contracts/"]
-COPY ["src/TypedMock.Core/TypedMock.Core.csproj", "src/TypedMock.Core/"]
 COPY ["src/ExternalService.Stubs/ExternalService.Stubs.csproj", "src/ExternalService.Stubs/"]
 
 # Restore dependencies

@@ -48,7 +48,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Net.Http;
 using System.Threading.Tasks;
-using TypedMock.Core.Exceptions;
 
 namespace Generated.Stubs;
 
@@ -104,7 +103,7 @@ public partial class WeatherApiStubController : ControllerBase, IWeatherApi
                     Summary = "Mild",
                     City = "Paris"
                 },
-            _ => throw new StubNotFoundException($"No recorded stub for city '{city}'.")
+            _ => throw new KeyNotFoundException($"No recorded stub for city '{city}'.")
         };
     }
 

@@ -1,13 +1,9 @@
 using System.Net;
-using System.Reflection;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Mvc.ApplicationParts;
-using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using TypedMock.Core.Contracts;
@@ -16,7 +12,6 @@ using TypedMock.Core.Hosting;
 using TypedMock.Core.Matching;
 using TypedMock.Core.Models;
 using TypedMock.Core.Proxy;
-using TypedMock.Core.Scenarios;
 
 namespace TypedMock.Core;
 
@@ -29,8 +24,6 @@ public class TypedMockServer : IAsyncDisposable
 
     private readonly TypedMockOptions _options;
     private readonly List<ContractEndpoint> _registeredEndpoints = [];
-    private readonly List<ProgrammaticMockRule> _programmaticRules = [];
-    private readonly List<Type> _registeredStubControllers = [];
     private readonly HttpClient _upstreamClient = new(SharedHandler, disposeHandler: false);
     private HttpProxyForwarder? _forwarder;
     private WebApplication? _app;
@@ -42,36 +35,8 @@ public class TypedMockServer : IAsyncDisposable
     }
 
     public string BaseUrl => _baseUrl ?? throw new InvalidOperationException("Server has not been started yet.");
-    public MockMode Mode => _options.Mode;
     public IReadOnlyList<RecordedInteraction> RecordedInteractions => _forwarder?.RecordedInteractions ?? [];
     public IReadOnlyList<ContractEndpoint> RegisteredEndpoints => _registeredEndpoints.AsReadOnly();
-    public IReadOnlyList<Type> RegisteredStubControllers => _registeredStubControllers.AsReadOnly();
-
-    public TypedMockServer RegisterStubController(Type controllerType)
-    {
-        if (!typeof(ControllerBase).IsAssignableFrom(controllerType))
-        {
-            throw new ArgumentException($"Type '{controllerType.Name}' must inherit from ControllerBase.", nameof(controllerType));
-        }
-
-        if (!_registeredStubControllers.Contains(controllerType))
-        {
-            _registeredStubControllers.Add(controllerType);
-        }
-        return this;
-    }
-
-    public TypedMockServer RegisterStubController<TController>() where TController : class =>
-        RegisterStubController(typeof(TController));
-
-    public TypedMockServer RegisterStubControllers(IEnumerable<Type> controllerTypes)
-    {
-        foreach (var type in controllerTypes)
-        {
-            RegisterStubController(type);
-        }
-        return this;
-    }
 
     public string GenerateStubSourceCode<TContract>(CSharpStubGeneratorOptions? options = null) where TContract : class
     {
@@ -188,12 +153,6 @@ public class TypedMockServer : IAsyncDisposable
         return RegisterContracts(contracts);
     }
 
-    public ContractMockSetup<TInterface> For<TInterface>() where TInterface : class
-    {
-        RegisterContract<TInterface>();
-        return new ContractMockSetup<TInterface>(rule => _programmaticRules.Add(rule));
-    }
-
     public async Task StartAsync()
     {
         _forwarder = new HttpProxyForwarder(_upstreamClient);
@@ -206,23 +165,6 @@ public class TypedMockServer : IAsyncDisposable
         builder.Services.AddLogging(logging => logging.AddConsole());
         builder.Services.AddRouting();
 
-        if (_registeredStubControllers.Count > 0)
-        {
-            var mvcBuilder = builder.Services.AddControllers();
-            var assemblies = _registeredStubControllers.Select(t => t.Assembly).Distinct();
-            foreach (var asm in assemblies)
-            {
-                mvcBuilder.AddApplicationPart(asm);
-            }
-
-            mvcBuilder.ConfigureApplicationPartManager(manager =>
-            {
-                manager.FeatureProviders.Add(new ExplicitControllerFeatureProvider(_registeredStubControllers));
-            });
-
-            mvcBuilder.AddControllersAsServices();
-        }
-
         builder.WebHost.UseKestrel(k =>
         {
             k.Listen(IPAddress.Loopback, _options.Port);
@@ -230,30 +172,7 @@ public class TypedMockServer : IAsyncDisposable
 
         _app = builder.Build();
 
-        // 1. Exception handling middleware
         _app.UseMiddleware<StubExceptionMiddleware>();
-
-        // 2. Scenario context middleware
-        _app.Use(async (context, next) =>
-        {
-            var scenarioName = context.Request.Headers[_options.ScenarioHeader].FirstOrDefault();
-            if (string.IsNullOrWhiteSpace(scenarioName))
-            {
-                scenarioName = context.Request.Query["__scenario"].FirstOrDefault();
-            }
-            scenarioName ??= "default";
-            context.Items["TypedMock.Scenario"] = scenarioName;
-
-            await next(context);
-        });
-
-        // 3. Map MVC Controllers if any registered
-        if (_registeredStubControllers.Count > 0)
-        {
-            _app.MapControllers();
-        }
-
-        // 4. Fallback handler for unmatched routes, programmatic rules, and admin endpoints
         _app.MapFallback(HandleRequestAsync);
 
         await _app.StartAsync();
@@ -298,21 +217,18 @@ public class TypedMockServer : IAsyncDisposable
             await context.Response.WriteAsJsonAsync(new
             {
                 status = "Running",
-                mode = _options.Mode.ToString(),
                 defaultTargetUrl = _options.TargetUrl,
                 upstreams = _options.Upstreams,
                 outputDirectory = _options.OutputDirectory,
                 registeredContracts = _registeredEndpoints.Select(e => e.InterfaceType.Name).Distinct().ToList(),
                 registeredEndpoints = _registeredEndpoints.Select(e => e.ToString()).ToList(),
-                registeredStubControllers = _registeredStubControllers.Select(t => t.Name).ToList(),
                 recordedInteractionsCount = RecordedInteractions.Count
             });
             return;
         }
 
         // Scenario resolution
-        var scenarioName = context.Items["TypedMock.Scenario"] as string
-            ?? context.Request.Headers[_options.ScenarioHeader].FirstOrDefault()
+        var scenarioName = context.Request.Headers[_options.ScenarioHeader].FirstOrDefault()
             ?? context.Request.Query["__scenario"].FirstOrDefault()
             ?? "default";
 
@@ -333,98 +249,25 @@ public class TypedMockServer : IAsyncDisposable
             }
         }
 
-        // Mode Execution: Record Mode
-        if (_options.Mode == MockMode.Record)
+        var targetUrl = matchedEndpoint != null
+            ? _options.ResolveTargetUrl(matchedEndpoint.InterfaceType.Name)
+            : _options.TargetUrl;
+
+        if (string.IsNullOrEmpty(targetUrl))
         {
-            var targetUrl = matchedEndpoint != null
-                ? _options.ResolveTargetUrl(matchedEndpoint.InterfaceType.Name)
-                : _options.TargetUrl;
-
-            if (string.IsNullOrEmpty(targetUrl))
-            {
-                context.Response.StatusCode = StatusCodes.Status500InternalServerError;
-                var errDetail = matchedEndpoint != null
-                    ? $"No upstream TargetUrl configured for contract '{matchedEndpoint.InterfaceType.Name}'."
-                    : "No default TargetUrl configured.";
-                await context.Response.WriteAsJsonAsync(new { error = errDetail, hint = "Specify TargetUrl or map contract in Upstreams dictionary." });
-                return;
-            }
-
-            await _forwarder!.ForwardAndRecordAsync(
-                context,
-                new Uri(targetUrl),
-                matchedEndpoint,
-                pathParams,
-                scenarioName);
+            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+            var errDetail = matchedEndpoint != null
+                ? $"No upstream TargetUrl configured for contract '{matchedEndpoint.InterfaceType.Name}'."
+                : "No default TargetUrl configured.";
+            await context.Response.WriteAsJsonAsync(new { error = errDetail, hint = "Specify TargetUrl or map contract in Upstreams dictionary." });
             return;
         }
 
-        // Replay or Hybrid Mode
-        if (matchedEndpoint != null)
-        {
-            var queryParams = context.Request.Query.ToDictionary(q => q.Key, q => q.Value.ToString(), StringComparer.OrdinalIgnoreCase);
-
-            // 1. Check Programmatic Rules
-            var rule = _programmaticRules.FirstOrDefault(r =>
-                r.InterfaceType == matchedEndpoint.InterfaceType &&
-                r.Matches(matchedEndpoint.Method.Name, pathParams, queryParams, scenarioName));
-
-            if (rule != null)
-            {
-                context.Response.StatusCode = rule.StatusCode;
-                context.Response.ContentType = rule.ContentType;
-
-                if (rule.ResponseData != null)
-                {
-                    await context.Response.WriteAsJsonAsync(rule.ResponseData);
-                }
-                return;
-            }
-        }
-
-        // 2. Fallback for Hybrid mode
-        if (_options.Mode == MockMode.Hybrid)
-        {
-            var targetUrl = matchedEndpoint != null
-                ? _options.ResolveTargetUrl(matchedEndpoint.InterfaceType.Name)
-                : _options.TargetUrl;
-
-            if (!string.IsNullOrEmpty(targetUrl))
-            {
-                var forwarded = await _forwarder!.ForwardAndRecordAsync(
-                    context,
-                    new Uri(targetUrl),
-                    matchedEndpoint,
-                    pathParams,
-                    scenarioName);
-                if (forwarded) return;
-            }
-        }
-
-        // Unmatched request
-        context.Response.StatusCode = StatusCodes.Status404NotFound;
-        await context.Response.WriteAsJsonAsync(new
-        {
-            error = "TypedMock: No matching mock rule found.",
-            method = context.Request.Method,
-            path,
-            matchedContractEndpoint = matchedEndpoint?.ToString(),
-            requestedScenario = scenarioName,
-            hint = "Record this endpoint first into a C# stub controller or configure a scenario rule using .For<T>().Setup(...)."
-        });
-    }
-}
-
-internal class ExplicitControllerFeatureProvider(IReadOnlyList<Type> allowedControllers) : IApplicationFeatureProvider<ControllerFeature>
-{
-    public void PopulateFeature(IEnumerable<ApplicationPart> parts, ControllerFeature feature)
-    {
-        for (var i = feature.Controllers.Count - 1; i >= 0; i--)
-        {
-            if (!allowedControllers.Contains(feature.Controllers[i].AsType()))
-            {
-                feature.Controllers.RemoveAt(i);
-            }
-        }
+        await _forwarder!.ForwardAndRecordAsync(
+            context,
+            new Uri(targetUrl),
+            matchedEndpoint,
+            pathParams,
+            scenarioName);
     }
 }

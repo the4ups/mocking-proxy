@@ -34,7 +34,6 @@ public class TypedMockTests
 
         var mockOptions = new TypedMockOptions
         {
-            Mode = MockMode.Record,
             TargetUrl = realServiceUrl
         };
 
@@ -84,7 +83,6 @@ public class TypedMockTests
 
         await using var mockServer = new TypedMockServer(new TypedMockOptions
         {
-            Mode = MockMode.Record,
             TargetUrl = realServiceUrl
         });
         mockServer.RegisterContract<IWeatherApi>();
@@ -108,16 +106,6 @@ public class TypedMockTests
         london.City.Should().Be("London");
         london.TemperatureC.Should().Be(12);
 
-        // Test TypedMockServer Unified Pipeline with the compiled stub controller
-        await using var unifiedServer = new TypedMockServer(new TypedMockOptions { Port = 0, Mode = MockMode.Replay });
-        unifiedServer.RegisterStubController(controllerType);
-        await unifiedServer.StartAsync();
-
-        var unifiedClient = RestClient.For<IWeatherApi>(unifiedServer.BaseUrl);
-        var unifiedParis = await unifiedClient.GetForecastByCityAsync("Paris");
-        unifiedParis.City.Should().Be("Paris");
-        unifiedParis.TemperatureC.Should().Be(18);
-
         var paris = await client.GetForecastByCityAsync("Paris");
         paris.City.Should().Be("Paris");
         paris.TemperatureC.Should().Be(18);
@@ -136,7 +124,6 @@ public class TypedMockTests
 
         await using var mockServer = new TypedMockServer(new TypedMockOptions
         {
-            Mode = MockMode.Record,
             TargetUrl = realServiceUrl
         });
         mockServer.RegisterContract<IWeatherApi>();
@@ -235,7 +222,6 @@ public class TypedMockTests
         {
             var mockOptions = new TypedMockOptions
             {
-                Mode = MockMode.Record,
                 Upstreams =
                 {
                     [nameof(IWeatherApi)] = weatherUrl,
@@ -295,115 +281,69 @@ public class TypedMockTests
     }
 
     // =========================================================================
-    // 3. REPLAY MODE & PROGRAMMATIC RULES TESTS
+    // 3. STUB CONTROLLER HOSTING & SCENARIO TESTS
     // =========================================================================
 
     [Fact]
-    public async Task ProgrammaticRule_ReturnsConfiguredDto()
+    public async Task StubController_ReturnsConfiguredDto()
     {
-        var mockOptions = new TypedMockOptions { Mode = MockMode.Replay };
-        await using var mockServer = new TypedMockServer(mockOptions);
+        await using var stubHost = await StubServerHost.StartAsync<TestWeatherStubController>(port: 0);
+        var url = StubServerHost.GetServerUrl(stubHost);
 
-        mockServer.For<IWeatherApi>()
-            .Setup(x => x.GetForecastByCityAsync("Atlantis"))
-            .Returns(new WeatherForecastDto
-            {
-                City = "Atlantis",
-                Date = DateOnly.FromDateTime(DateTime.Today),
-                TemperatureC = 30,
-                Summary = "Tropical Underwater"
-            });
+        using var httpClient = new HttpClient { BaseAddress = new Uri(url) };
+        var response = await httpClient.GetAsync("/weather-test/ControllerLondon");
+        response.IsSuccessStatusCode.Should().BeTrue();
+        var result = await response.Content.ReadFromJsonAsync<WeatherForecastDto>();
 
-        await mockServer.StartAsync();
-
-        var client = RestClient.For<IWeatherApi>(mockServer.BaseUrl);
-        var result = await client.GetForecastByCityAsync("Atlantis");
-
-        result.City.Should().Be("Atlantis");
-        result.TemperatureC.Should().Be(30);
+        result!.City.Should().Be("ControllerLondon");
+        result.TemperatureC.Should().Be(19);
     }
 
     [Fact]
     public async Task ErrorSimulation_Returns500Status()
     {
-        var mockOptions = new TypedMockOptions { Mode = MockMode.Replay };
-        await using var mockServer = new TypedMockServer(mockOptions);
+        await using var stubHost = await StubServerHost.StartAsync<ErrorThrowingStubController>(port: 0);
+        var url = StubServerHost.GetServerUrl(stubHost);
 
-        mockServer.For<IWeatherApi>()
-            .Setup(x => x.GetForecastByCityAsync("BrokenCity"))
-            .ReturnsStatus(500, new { error = "Internal Database Timeout" });
-
-        await mockServer.StartAsync();
-
-        var client = RestClient.For<IWeatherApi>(mockServer.BaseUrl);
-        var act = async () => await client.GetForecastByCityAsync("BrokenCity");
-        var ex = await act.Should().ThrowAsync<ApiException>();
-        ex.Which.StatusCode.Should().Be(System.Net.HttpStatusCode.InternalServerError);
+        using var httpClient = new HttpClient { BaseAddress = new Uri(url) };
+        var response = await httpClient.GetAsync("/error-test");
+        response.StatusCode.Should().Be(System.Net.HttpStatusCode.InternalServerError);
     }
 
     [Fact]
     public async Task ScenarioHeader_MatchesSpecificScenario()
     {
-        var mockOptions = new TypedMockOptions { Mode = MockMode.Replay };
-        await using var mockServer = new TypedMockServer(mockOptions);
+        await using var stubHost = await StubServerHost.StartAsync<ScenarioInspectingStubController>(port: 0);
+        var url = StubServerHost.GetServerUrl(stubHost);
 
-        mockServer.For<IWeatherApi>()
-            .Setup(x => x.GetForecastByCityAsync("Tokyo"))
-            .WithScenario("TyphoonAlert")
-            .Returns(new WeatherForecastDto
-            {
-                City = "Tokyo",
-                Date = DateOnly.FromDateTime(DateTime.Today),
-                TemperatureC = 14,
-                Summary = "Heavy Rain & Wind"
-            });
-
-        await mockServer.StartAsync();
-
-        using var httpClient = new HttpClient { BaseAddress = new Uri(mockServer.BaseUrl) };
+        using var httpClient = new HttpClient { BaseAddress = new Uri(url) };
         httpClient.DefaultRequestHeaders.Add("X-Mock-Scenario", "TyphoonAlert");
-        var client = RestClient.For<IWeatherApi>(httpClient);
 
-        var result = await client.GetForecastByCityAsync("Tokyo");
-        result.City.Should().Be("Tokyo");
-        result.Summary.Should().Be("Heavy Rain & Wind");
+        var response = await httpClient.GetAsync("/scenario-inspect/Tokyo");
+        response.IsSuccessStatusCode.Should().BeTrue();
+
+        var result = await response.Content.ReadFromJsonAsync<WeatherForecastDto>();
+        result!.Summary.Should().Be("TyphoonAlert");
     }
 
     [Fact]
     public async Task UnmatchedRequest_Returns404NotFound()
     {
-        var mockOptions = new TypedMockOptions { Mode = MockMode.Replay };
-        await using var mockServer = new TypedMockServer(mockOptions);
-        mockServer.RegisterContract<IWeatherApi>();
-        await mockServer.StartAsync();
+        await using var stubHost = await StubServerHost.StartAsync<TestWeatherStubController>(port: 0);
+        var url = StubServerHost.GetServerUrl(stubHost);
 
-        var client = RestClient.For<IWeatherApi>(mockServer.BaseUrl);
-        var act = async () => await client.GetForecastByCityAsync("UnknownCity");
-        var ex = await act.Should().ThrowAsync<ApiException>();
-        ex.Which.StatusCode.Should().Be(System.Net.HttpStatusCode.NotFound);
-    }
-
-    // =========================================================================
-    // 3.5. STUB CONTROLLER HOSTING & DISPATCH PRECEDENCE TESTS
-    // =========================================================================
-
-    [Fact]
-    public void RegisterStubController_RejectsNonControllerType()
-    {
-        var server = new TypedMockServer();
-        var act = () => server.RegisterStubController(typeof(string));
-        act.Should().Throw<ArgumentException>()
-            .WithMessage("*must inherit from ControllerBase*");
+        using var httpClient = new HttpClient { BaseAddress = new Uri(url) };
+        var response = await httpClient.GetAsync("/weather-test/UnknownCity");
+        response.StatusCode.Should().Be(System.Net.HttpStatusCode.NotFound);
     }
 
     [Fact]
-    public async Task UnifiedPipeline_HostsStubController_AndServesTraffic()
+    public async Task StubServerHost_HostsStubController_AndServesTraffic()
     {
-        await using var mockServer = new TypedMockServer(new TypedMockOptions { Port = 0, Mode = MockMode.Replay });
-        mockServer.RegisterStubController<TestWeatherStubController>();
-        await mockServer.StartAsync();
+        await using var stubHost = await StubServerHost.StartAsync<TestWeatherStubController>(port: 0);
+        var url = StubServerHost.GetServerUrl(stubHost);
 
-        using var httpClient = new HttpClient { BaseAddress = new Uri(mockServer.BaseUrl) };
+        using var httpClient = new HttpClient { BaseAddress = new Uri(url) };
         var forecastsResp = await httpClient.GetAsync("/weather-test");
         forecastsResp.IsSuccessStatusCode.Should().BeTrue();
         var forecasts = await forecastsResp.Content.ReadFromJsonAsync<List<WeatherForecastDto>>();
@@ -414,52 +354,15 @@ public class TypedMockTests
         var london = await londonResp.Content.ReadFromJsonAsync<WeatherForecastDto>();
         london!.City.Should().Be("ControllerLondon");
         london.TemperatureC.Should().Be(19);
-
-        // Status diagnostic endpoint includes registeredStubControllers
-        var statusResp = await httpClient.GetAsync("/__typedmock/status");
-        var statusJson = await statusResp.Content.ReadAsStringAsync();
-        statusJson.Should().Contain(nameof(TestWeatherStubController));
-    }
-
-    [Fact]
-    public async Task RequestDispatchPrecedence_ControllerTakesPrecedenceOverProgrammaticRule()
-    {
-        await using var mockServer = new TypedMockServer(new TypedMockOptions { Port = 0, Mode = MockMode.Replay });
-        mockServer.RegisterStubController<TestWeatherStubController>();
-
-        // Programmatic rule on a DIFFERENT contract not handled by TestWeatherStubController
-        mockServer.For<IPaymentApi>()
-            .Setup(x => x.GetPaymentAsync("tx_100"))
-            .Returns(new PaymentResponseDto { TransactionId = "tx_100", Status = "Success", Amount = 100m });
-
-        await mockServer.StartAsync();
-
-        using var httpClient = new HttpClient { BaseAddress = new Uri(mockServer.BaseUrl) };
-
-        // Controller route works
-        var weatherResp = await httpClient.GetAsync("/weather-test/ControllerLondon");
-        weatherResp.IsSuccessStatusCode.Should().BeTrue();
-        var weather = await weatherResp.Content.ReadFromJsonAsync<WeatherForecastDto>();
-        weather!.City.Should().Be("ControllerLondon");
-
-        // Fallback to programmatic rule for route not in controller
-        var paymentClient = RestClient.For<IPaymentApi>(mockServer.BaseUrl);
-        var paymentResult = await paymentClient.GetPaymentAsync("tx_100");
-        paymentResult.TransactionId.Should().Be("tx_100");
-
-        // Admin status route works
-        var adminResp = await httpClient.GetAsync("/__typedmock/status");
-        adminResp.IsSuccessStatusCode.Should().BeTrue();
     }
 
     [Fact]
     public async Task ScenarioContextMiddleware_PropagatesScenarioToContext()
     {
-        await using var mockServer = new TypedMockServer(new TypedMockOptions { Port = 0, Mode = MockMode.Replay });
-        mockServer.RegisterStubController<ScenarioInspectingStubController>();
-        await mockServer.StartAsync();
+        await using var stubHost = await StubServerHost.StartAsync<ScenarioInspectingStubController>(port: 0);
+        var url = StubServerHost.GetServerUrl(stubHost);
 
-        using var httpClient = new HttpClient { BaseAddress = new Uri(mockServer.BaseUrl) };
+        using var httpClient = new HttpClient { BaseAddress = new Uri(url) };
         httpClient.DefaultRequestHeaders.Add("X-Mock-Scenario", "CustomScenario");
 
         var response = await httpClient.GetAsync("/scenario-inspect/AnyCity");
@@ -526,7 +429,6 @@ public class TypedMockTests
         {
             await using var mockServer = new TypedMockServer(new TypedMockOptions
             {
-                Mode = MockMode.Record,
                 TargetUrl = corruptedServiceUrl
             });
             mockServer.RegisterContract<IWeatherApi>();
@@ -627,12 +529,20 @@ public class TestWeatherStubController : ControllerBase
             });
         }
 
-        throw new StubNotFoundException($"No stub for {city}");
+        throw new KeyNotFoundException($"No stub for {city}");
     }
 
     [HttpPost]
     public Task<WeatherForecastDto> CreateForecastAsync([FromBody] CreateForecastRequest request) =>
         Task.FromResult(new WeatherForecastDto { City = request.City, TemperatureC = request.TemperatureC, Summary = request.Summary });
+}
+
+[ApiController]
+[Route("error-test")]
+public class ErrorThrowingStubController : ControllerBase
+{
+    [HttpGet]
+    public IActionResult GetError() => StatusCode(500, new { error = "Internal Database Timeout" });
 }
 
 [ApiController]

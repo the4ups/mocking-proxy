@@ -38,7 +38,6 @@ public class GoldenScenarioRecordingAndReplayTests
         // 2. Start TypedMock in Record mode pointing to ExternalService.Stubs/Controllers
         var mockOptions = new TypedMockOptions
         {
-            Mode = MockMode.Record,
             TargetUrl = upstreamUrl,
             OutputDirectory = controllersDir,
             StubNamespace = "ExternalService.Stubs.Controllers"
@@ -87,13 +86,12 @@ public class GoldenScenarioRecordingAndReplayTests
     [Fact]
     public async Task Step2_ConsumerIntegration_SampleClientApp_RunsAgainstRepositoryStubController()
     {
-        // 1. Host the repository-stored WeatherApiStubController via TypedMockServer in Replay mode
-        await using var mockServer = new TypedMockServer(new TypedMockOptions { Port = 0, Mode = MockMode.Replay });
-        mockServer.RegisterStubController<ExternalService.Stubs.Controllers.WeatherApiStubController>();
-        await mockServer.StartAsync();
+        // 1. Host the repository-stored WeatherApiStubController via StubServerHost
+        await using var stubHost = await StubServerHost.StartAsync<ExternalService.Stubs.Controllers.WeatherApiStubController>(port: 0);
+        var stubUrl = StubServerHost.GetServerUrl(stubHost);
 
         // 2. Run SampleClientApp WeatherReportService against the hosted stub server
-        var weatherReportService = SampleClientApp.WeatherReportService.Create(mockServer.BaseUrl);
+        var weatherReportService = SampleClientApp.WeatherReportService.Create(stubUrl);
 
         var londonSummary = await weatherReportService.GetCitySummaryAsync("London");
         londonSummary.Should().Contain("London: 12°C");
@@ -114,11 +112,10 @@ public class GoldenScenarioRecordingAndReplayTests
     public async Task Step3_PartialClassHookOverride_CustomizesStubBehavior()
     {
         // Subclass repository-stored WeatherApiStubController to override an extensibility hook
-        await using var mockServer = new TypedMockServer(new TypedMockOptions { Port = 0, Mode = MockMode.Replay });
-        mockServer.RegisterStubController<OverriddenWeatherStubController>();
-        await mockServer.StartAsync();
+        await using var stubHost = await StubServerHost.StartAsync<OverriddenWeatherStubController>(port: 0);
+        var stubUrl = StubServerHost.GetServerUrl(stubHost);
 
-        var client = RestClient.For<IWeatherApi>(mockServer.BaseUrl);
+        var client = RestClient.For<IWeatherApi>(stubUrl);
 
         // London uses overridden hook logic returning custom status/data
         var london = await client.GetForecastByCityAsync("London");

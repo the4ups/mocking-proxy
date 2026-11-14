@@ -1,16 +1,7 @@
 namespace TypedMock.Core;
 
-public enum MockMode
-{
-    Replay,
-    Record,
-    Hybrid
-}
-
 public class TypedMockOptions
 {
-    public MockMode Mode { get; set; } = MockMode.Replay;
-
     /// <summary>
     /// Default upstream target URL for single-service proxying or fallback.
     /// </summary>

@@ -14,7 +14,6 @@ using TypedMock.Core.Exceptions;
 using TypedMock.Core.Generators;
 using TypedMock.Core.Hosting;
 using TypedMock.Core.Models;
-using TypedMock.Core.Scenarios;
 using Xunit;
 
 namespace TypedMock.Tests;
@@ -252,8 +251,7 @@ public class CoverageBumpTests
     {
         await using var mockServer = new TypedMockServer(new TypedMockOptions
         {
-            Port = 0,
-            Mode = MockMode.Record
+            Port = 0
             // TargetUrl is intentionally null
         });
         mockServer.RegisterContract<IWeatherApi>();
@@ -268,39 +266,22 @@ public class CoverageBumpTests
     }
 
     [Fact]
-    public async Task TypedMockServer_ScenarioResolution_ViaQueryString()
+    public async Task StubServerHost_ScenarioResolution_ViaQueryString()
     {
-        await using var mockServer = new TypedMockServer(new TypedMockOptions { Port = 0 });
-        mockServer.For<IWeatherApi>()
-            .Setup(x => x.GetForecastByCityAsync("Tokyo"))
-            .WithScenario("rainy")
-            .Returns(new WeatherForecastDto
-            {
-                City = "Tokyo",
-                TemperatureC = 15,
-                Summary = "Heavy rain"
-            });
+        await using var stubHost = await StubServerHost.StartAsync<ScenarioInspectingStubController>(port: 0);
+        var url = StubServerHost.GetServerUrl(stubHost);
 
-        await mockServer.StartAsync();
-
-        var client = RestClient.For<IWeatherApi>(mockServer.BaseUrl);
-
-        // Via query parameter __scenario=rainy
-        using var rawClient = new HttpClient { BaseAddress = new Uri(mockServer.BaseUrl) };
-        var resp = await rawClient.GetAsync("/weatherforecast/Tokyo?__scenario=rainy");
+        using var rawClient = new HttpClient { BaseAddress = new Uri(url) };
+        var resp = await rawClient.GetAsync("/scenario-inspect/Tokyo?__scenario=rainy");
         resp.IsSuccessStatusCode.Should().BeTrue();
 
         var dto = await resp.Content.ReadFromJsonAsync<WeatherForecastDto>();
         dto.Should().NotBeNull();
-        dto!.Summary.Should().Be("Heavy rain");
-
-        // Request with missing scenario or unmatched scenario returns 404
-        var unmatchedResp = await rawClient.GetAsync("/weatherforecast/Tokyo?__scenario=sunny");
-        unmatchedResp.StatusCode.Should().Be(System.Net.HttpStatusCode.NotFound);
+        dto!.Summary.Should().Be("rainy");
     }
 
     [Fact]
-    public async Task TypedMockServer_UnmatchedRequest_ReturnsDetailed404Json()
+    public async Task TypedMockServer_UnmatchedRequest_Returns500WhenNoTargetUrl()
     {
         await using var mockServer = new TypedMockServer(new TypedMockOptions { Port = 0 });
         mockServer.RegisterContract<IWeatherApi>();
@@ -308,10 +289,7 @@ public class CoverageBumpTests
 
         using var client = new HttpClient { BaseAddress = new Uri(mockServer.BaseUrl) };
         var resp = await client.GetAsync("/unknown/endpoint/route");
-        resp.StatusCode.Should().Be(System.Net.HttpStatusCode.NotFound);
-
-        var content = await resp.Content.ReadAsStringAsync();
-        content.Should().Contain("TypedMock: No matching mock rule found.");
+        resp.StatusCode.Should().Be(System.Net.HttpStatusCode.InternalServerError);
     }
 
     [Fact]
@@ -327,7 +305,6 @@ public class CoverageBumpTests
             var mockServer = new TypedMockServer(new TypedMockOptions
             {
                 Port = 0,
-                Mode = MockMode.Record,
                 TargetUrl = realServiceUrl,
                 OutputDirectory = tempDir
             });
@@ -348,122 +325,6 @@ public class CoverageBumpTests
         }
     }
 
-    // =========================================================================
-    // 4. PROGRAMMATIC RULES & CONTRACT MOCK SETUP EDGE CASES
-    // =========================================================================
-
-    public class PropContainer
-    {
-        public string CityProp { get; set; } = "Rome";
-        public string CityField = "Madrid";
-    }
-
-    [Fact]
-    public async Task ContractMockSetup_SupportsPropertiesFieldsAndComplexExpressions()
-    {
-        await using var mockServer = new TypedMockServer(new TypedMockOptions { Port = 0 });
-
-        var container = new PropContainer();
-        // Property access in expression
-        mockServer.For<IWeatherApi>()
-            .Setup(x => x.GetForecastByCityAsync(container.CityProp))
-            .Returns(new WeatherForecastDto { City = "Rome", TemperatureC = 25, Summary = "Warm" });
-
-        // Field access in expression
-        mockServer.For<IWeatherApi>()
-            .Setup(x => x.GetForecastByCityAsync(container.CityField))
-            .Returns(new WeatherForecastDto { City = "Madrid", TemperatureC = 30, Summary = "Hot" });
-
-        // Complex dynamically evaluated expression
-        mockServer.For<IWeatherApi>()
-            .Setup(x => x.GetForecastByCityAsync("O" + "slo"))
-            .Returns(new WeatherForecastDto { City = "Oslo", TemperatureC = 5, Summary = "Cold" });
-
-        await mockServer.StartAsync();
-
-        var client = RestClient.For<IWeatherApi>(mockServer.BaseUrl);
-
-        var r1 = await client.GetForecastByCityAsync("Rome");
-        r1.Summary.Should().Be("Warm");
-
-        var r2 = await client.GetForecastByCityAsync("Madrid");
-        r2.Summary.Should().Be("Hot");
-
-        var r3 = await client.GetForecastByCityAsync("Oslo");
-        r3.Summary.Should().Be("Cold");
-    }
-
-    [Fact]
-    public void ContractMockSetup_ThrowsOnNonMethodCallExpression()
-    {
-        var setup = new ContractMockSetup<IWeatherApi>(_ => { });
-        var act = () => setup.Setup<WeatherForecastDto>(_ => null!);
-        act.Should().Throw<ArgumentException>().WithMessage("*Expression must be a method call*");
-    }
-
-    public interface IEmptyContract
-    {
-        Task<string> NoAttributeMethod();
-    }
-
-    [Fact]
-    public void ContractMockSetup_ThrowsWhenMethodNotFoundInEndpoints()
-    {
-        var setup = new ContractMockSetup<IEmptyContract>(_ => { });
-        var act = () => setup.Setup(x => x.NoAttributeMethod());
-        act.Should().Throw<InvalidOperationException>().WithMessage("*not found in IEmptyContract contract endpoints*");
-    }
-
-    [Fact]
-    public void ContractMockSetup_MapsQueryParametersProperly()
-    {
-        ProgrammaticMockRule? registeredRule = null;
-        var setup = new ContractMockSetup<ITestContract>(r => registeredRule = r);
-        setup.Setup(x => x.GetWithHeaderAndExplicitQuery(123, "myHeader", "myQuery", "myImplicit"));
-
-        registeredRule.Should().NotBeNull();
-        registeredRule!.ExpectedPathParameters.Should().ContainKey("id").WhoseValue.Should().Be("123");
-        registeredRule.ExpectedQueryParameters.Should().ContainKey("q").WhoseValue.Should().Be("myQuery");
-        registeredRule.ExpectedQueryParameters.Should().ContainKey("implicitQuery").WhoseValue.Should().Be("myImplicit");
-    }
-
-    [Fact]
-    public void ProgrammaticMockRule_Matches_EvaluatesCorrectly()
-    {
-        var method = typeof(IWeatherApi).GetMethod(nameof(IWeatherApi.GetForecastByCityAsync))!;
-        var rule = new ProgrammaticMockRule
-        {
-            InterfaceType = typeof(IWeatherApi),
-            Method = method,
-            ScenarioName = "custom",
-            ExpectedPathParameters = new Dictionary<string, string> { { "city", "Athens" } },
-            ExpectedQueryParameters = new Dictionary<string, string> { { "filter", "all" } }
-        };
-
-        // Method name mismatch
-        rule.Matches("OtherMethod", new Dictionary<string, string> { { "city", "Athens" } }, new Dictionary<string, string> { { "filter", "all" } }, "custom")
-            .Should().BeFalse();
-
-        // Scenario mismatch
-        rule.Matches(nameof(IWeatherApi.GetForecastByCityAsync), new Dictionary<string, string> { { "city", "Athens" } }, new Dictionary<string, string> { { "filter", "all" } }, "otherScenario")
-            .Should().BeFalse();
-
-        // Path param mismatch
-        rule.Matches(nameof(IWeatherApi.GetForecastByCityAsync), new Dictionary<string, string> { { "city", "Rome" } }, new Dictionary<string, string> { { "filter", "all" } }, "custom")
-            .Should().BeFalse();
-
-        // Query param mismatch
-        rule.Matches(nameof(IWeatherApi.GetForecastByCityAsync), new Dictionary<string, string> { { "city", "Athens" } }, new Dictionary<string, string> { { "filter", "none" } }, "custom")
-            .Should().BeFalse();
-
-        // Exact match
-        rule.Matches(nameof(IWeatherApi.GetForecastByCityAsync), new Dictionary<string, string> { { "city", "Athens" } }, new Dictionary<string, string> { { "filter", "all" } }, "custom")
-            .Should().BeTrue();
-
-        // Overload with 3 parameters
-        rule.Matches(nameof(IWeatherApi.GetForecastByCityAsync), new Dictionary<string, string> { { "city", "Athens" } }, "custom")
-            .Should().BeTrue();
-    }
 
     // =========================================================================
     // 5. REST EASE CONTRACT SCANNER TESTS
@@ -670,37 +531,10 @@ public class CoverageBumpTests
     [Fact]
     public async Task WeatherReportService_AllMethodsExecuteProperly()
     {
-        await using var mockServer = new TypedMockServer(new TypedMockOptions { Port = 0 });
+        await using var stubHost = await StubServerHost.StartAsync<SampleWeatherStubController>(port: 0);
+        var url = StubServerHost.GetServerUrl(stubHost);
 
-        mockServer.For<IWeatherApi>()
-            .Setup(x => x.GetForecastByCityAsync("London"))
-            .Returns(new WeatherForecastDto
-            {
-                City = "London",
-                TemperatureC = 15,
-                Summary = "Pleasant"
-            });
-
-        mockServer.For<IWeatherApi>()
-            .Setup(x => x.GetForecastsAsync())
-            .Returns(new List<WeatherForecastDto>
-            {
-                new() { City = "A", TemperatureC = 10, Summary = "X" },
-                new() { City = "B", TemperatureC = 20, Summary = "Y" }
-            });
-
-        mockServer.For<IWeatherApi>()
-            .Setup(x => x.CreateForecastAsync(null!))
-            .Returns(new WeatherForecastDto
-            {
-                City = "Berlin",
-                TemperatureC = 21,
-                Summary = "Sunny"
-            });
-
-        await mockServer.StartAsync();
-
-        var service = SampleClientApp.WeatherReportService.Create(mockServer.BaseUrl);
+        var service = SampleClientApp.WeatherReportService.Create(url);
 
         var summary = await service.GetCitySummaryAsync("London");
         summary.Should().Contain("London: 15°C (58°F), Pleasant");
@@ -715,14 +549,10 @@ public class CoverageBumpTests
     [Fact]
     public async Task WeatherReportService_GetAverageTemperatureAsync_WhenEmpty_ReturnsZero()
     {
-        await using var mockServer = new TypedMockServer(new TypedMockOptions { Port = 0 });
-        mockServer.For<IWeatherApi>()
-            .Setup(x => x.GetForecastsAsync())
-            .Returns(new List<WeatherForecastDto>());
+        await using var stubHost = await StubServerHost.StartAsync<EmptyWeatherStubController>(port: 0);
+        var url = StubServerHost.GetServerUrl(stubHost);
 
-        await mockServer.StartAsync();
-
-        var service = SampleClientApp.WeatherReportService.Create(mockServer.BaseUrl);
+        var service = SampleClientApp.WeatherReportService.Create(url);
         var avg = await service.GetAverageTemperatureAsync();
         avg.Should().Be(0);
     }
@@ -749,4 +579,37 @@ public class CoverageBumpTests
             }
         }
     }
+}
+
+[Microsoft.AspNetCore.Mvc.ApiController]
+public class SampleWeatherStubController : Microsoft.AspNetCore.Mvc.ControllerBase, IWeatherApi
+{
+    [Microsoft.AspNetCore.Mvc.HttpGet("weatherforecast/{city}")]
+    public Task<WeatherForecastDto> GetForecastByCityAsync([Microsoft.AspNetCore.Mvc.FromRoute] string city) =>
+        Task.FromResult(new WeatherForecastDto { City = "London", TemperatureC = 15, Summary = "Pleasant" });
+
+    [Microsoft.AspNetCore.Mvc.HttpGet("weatherforecast")]
+    public Task<List<WeatherForecastDto>> GetForecastsAsync() =>
+        Task.FromResult(new List<WeatherForecastDto>
+        {
+            new() { City = "A", TemperatureC = 10, Summary = "X" },
+            new() { City = "B", TemperatureC = 20, Summary = "Y" }
+        });
+
+    [Microsoft.AspNetCore.Mvc.HttpPost("weatherforecast")]
+    public Task<WeatherForecastDto> CreateForecastAsync([Microsoft.AspNetCore.Mvc.FromBody] CreateForecastRequest request) =>
+        Task.FromResult(new WeatherForecastDto { City = "Berlin", TemperatureC = 21, Summary = "Sunny" });
+}
+
+[Microsoft.AspNetCore.Mvc.ApiController]
+public class EmptyWeatherStubController : Microsoft.AspNetCore.Mvc.ControllerBase, IWeatherApi
+{
+    [Microsoft.AspNetCore.Mvc.HttpGet("weatherforecast/{city}")]
+    public Task<WeatherForecastDto> GetForecastByCityAsync([Microsoft.AspNetCore.Mvc.FromRoute] string city) => throw new NotImplementedException();
+
+    [Microsoft.AspNetCore.Mvc.HttpGet("weatherforecast")]
+    public Task<List<WeatherForecastDto>> GetForecastsAsync() => Task.FromResult(new List<WeatherForecastDto>());
+
+    [Microsoft.AspNetCore.Mvc.HttpPost("weatherforecast")]
+    public Task<WeatherForecastDto> CreateForecastAsync([Microsoft.AspNetCore.Mvc.FromBody] CreateForecastRequest request) => throw new NotImplementedException();
 }

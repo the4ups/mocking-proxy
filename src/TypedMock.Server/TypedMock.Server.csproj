@@ -21,6 +21,7 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <RepositoryUrl>https://github.com/serge/MockingProxyProofOfConcept</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+    <DefaultItemExcludes>$(DefaultItemExcludes);tmp*/**;GeneratedStubs/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>

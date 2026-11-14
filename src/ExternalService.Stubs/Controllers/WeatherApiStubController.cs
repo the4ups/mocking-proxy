@@ -10,7 +10,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Net.Http;
 using System.Threading.Tasks;
-using TypedMock.Core.Exceptions;
 
 namespace ExternalService.Stubs.Controllers;
 
@@ -27,21 +26,21 @@ public partial class WeatherApiStubController : ControllerBase, IWeatherApi
         {
             new WeatherForecastDto
             {
-                Date = DateOnly.Parse("2026-11-13", CultureInfo.InvariantCulture),
+                Date = DateOnly.Parse("2026-11-14", CultureInfo.InvariantCulture),
                 TemperatureC = 12,
                 Summary = "Chilly",
                 City = "London"
             },
             new WeatherForecastDto
             {
-                Date = DateOnly.Parse("2026-11-13", CultureInfo.InvariantCulture),
+                Date = DateOnly.Parse("2026-11-14", CultureInfo.InvariantCulture),
                 TemperatureC = 18,
                 Summary = "Mild",
                 City = "Paris"
             },
             new WeatherForecastDto
             {
-                Date = DateOnly.Parse("2026-11-13", CultureInfo.InvariantCulture),
+                Date = DateOnly.Parse("2026-11-14", CultureInfo.InvariantCulture),
                 TemperatureC = 22,
                 Summary = "Warm",
                 City = "Tokyo"
@@ -60,7 +59,7 @@ public partial class WeatherApiStubController : ControllerBase, IWeatherApi
             "london" =>
                 new WeatherForecastDto
                 {
-                    Date = DateOnly.Parse("2026-11-13", CultureInfo.InvariantCulture),
+                    Date = DateOnly.Parse("2026-11-14", CultureInfo.InvariantCulture),
                     TemperatureC = 12,
                     Summary = "Chilly",
                     City = "London"
@@ -68,12 +67,12 @@ public partial class WeatherApiStubController : ControllerBase, IWeatherApi
             "paris" =>
                 new WeatherForecastDto
                 {
-                    Date = DateOnly.Parse("2026-11-13", CultureInfo.InvariantCulture),
+                    Date = DateOnly.Parse("2026-11-14", CultureInfo.InvariantCulture),
                     TemperatureC = 18,
                     Summary = "Mild",
                     City = "Paris"
                 },
-            _ => throw new StubNotFoundException($"No recorded stub for city '{city}'.")
+            _ => throw new KeyNotFoundException($"No recorded stub for city '{city}'.")
         };
     }
 
@@ -88,12 +87,12 @@ public partial class WeatherApiStubController : ControllerBase, IWeatherApi
             { City: "Berlin", TemperatureC: 23, Summary: "Sunny and clear" } =>
                 new WeatherForecastDto
                 {
-                    Date = DateOnly.Parse("2026-11-13", CultureInfo.InvariantCulture),
+                    Date = DateOnly.Parse("2026-11-14", CultureInfo.InvariantCulture),
                     TemperatureC = 23,
                     Summary = "Sunny and clear",
                     City = "Berlin"
                 },
-            _ => throw new StubNotFoundException($"No recorded stub for request '{request}'.")
+            _ => throw new KeyNotFoundException($"No recorded stub for request '{request}'.")
         };
     }
 

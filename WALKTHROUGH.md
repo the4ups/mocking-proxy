@@ -33,7 +33,8 @@
 1. **Compile-Time безопасность:** При обновлении контрактов стабы либо компилируются, либо компилятор сразу показывает ошибку (`CS0535` / `CS1061`).
 2. **Детерминированный Pattern-Matching:** Входной запрос (Route, Query, Request Body DTO) строго связывается с конкретным ответом прямо в C#-коде (`request switch { { City: "Berlin", TemperatureC: 23 } => ... }`).
 3. **Повторные вызовы (Idempotency):** Никаких нестабильных очередей (queues/sequences) — один и тот же запрос всегда детерминированно возвращает один и тот же записанный ответ, выдерживая ретраи (Polly) и параллельные вызовы.
-4. **Языковая независимость через OpenAPI / Swagger:** Контракт может поступать не только как C# NuGet, но и как Swagger/OpenAPI спецификация (от сервисов на Go, Java, Python), из которой генерируются типизированные C# DTO и стабы.
+4. **Zero-Dependency хост стабов:** Сгенерированный проект со стабами (`*.Stubs`) — это автономное ASP.NET Core приложение, ссылающееся только на контракты и не зависящее от движка `TypedMock.Core`.
+5. **Языковая независимость через OpenAPI / Swagger:** Контракт может поступать не только как C# NuGet, но и как Swagger/OpenAPI спецификация (от сервисов на Go, Java, Python), из которой генерируются типизированные C# DTO и стабы.
 
 ```mermaid
 flowchart TD
@@ -43,15 +44,15 @@ flowchart TD
         Swagger["OpenAPI / Swagger Spec\n(Language-Agnostic: Go, Java, Python)"]
     end
 
-    subgraph Core["TypedMock Engine"]
+    subgraph Core["TypedMock Engine (Recorder)"]
         Scanner["Contract Scanner & Route Matcher"]
         Proxy["Record Proxy (Upstream Traffic Interceptor)"]
         CodeGen["C# Stub Generator (Pattern Matching & Value Emitter)"]
     end
 
-    subgraph GeneratedArtifacts["Целевой результат (Zero-JSON)"]
+    subgraph GeneratedArtifacts["Целевой результат (Zero-JSON, Zero-Dependency)"]
         Controller["Typed C# Stub Controller\n(: ControllerBase, IExternalContract)"]
-        Host["In-Memory / HTTP Stand Host\n(Compile-Time Safe & IDE Refactorable)"]
+        Host["In-Memory / Standalone HTTP Host\n(Compile-Time Safe & IDE Refactorable)"]
     end
 
     Contracts --> Core
@@ -59,9 +60,9 @@ flowchart TD
 ```
 
 ### Защита от дрифта и повторяющихся вызовов:
-1. **Детерминированное связывание «Вход -> Ответ»:** Входные DTO и параметры запроса превращаются в C# Pattern Matching. Если для данного запроса нет записанного ответа, возвращается `404 Not Found` (`StubNotFoundException`), а не случайные данные.
+1. **Детерминированное связывание «Вход -> Ответ»:** Входные DTO и параметры запроса превращаются в C# Pattern Matching. Если для данного запроса нет записанного ответа, возвращается `404 Not Found` (`KeyNotFoundException`), а не случайные данные.
 2. **Дедупликация:** Повторные запросы с идентичным телом или параметрами не дублируют код, а сливаются в один стабильный case в `switch`.
-3. **Compile-Time защита (C# Stubs):** При удалении или переименовании поля в DTO сгенерированные моки немедленно выдают ошибку компиляции.
+3. **Compile-Time защита (C# Stubs):** При удалении или переименовании поля в DTO сгенерированные моки немедленно выдают ошибку компиляции на этапе сборки.
 
 ---
 
@@ -72,11 +73,12 @@ flowchart TD
 | Проект | Назначение |
 |---|---|
 | [`src/ExternalService.Contracts`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/src/ExternalService.Contracts) | Имитация NuGet-пакета внешней команды: интерфейс `IWeatherApi` с аннотациями RestEase (`[Get]`, `[Post]`, `[Path]`, `[Body]`) и DTO-модели. |
-| [`src/TypedMock.Core`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/src/TypedMock.Core) | Ядро движка: встроенный Kestrel, сканер контрактов, матчер роутов, валидатор схем, обратный прокси, генератор C# стабов и in-memory тестовый хост. |
-| [`src/TypedMock.Server`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/src/TypedMock.Server) | Standalone CLI-приложение для запуска на тестовых стендах / в Docker-контейнерах. Поддерживает режимы `--mode=Record` / `--mode=Replay` и endpoint диагностики `/__typedmock/status`. |
+| [`src/ExternalService.Stubs`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/src/ExternalService.Stubs) | Автономный проект стабов: ASP.NET Core приложение с версионируемыми C# контроллерами. Имеет **ноль зависимостей** от `TypedMock.Core`. |
+| [`src/TypedMock.Core`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/src/TypedMock.Core) | Ядро движка записи: обратный прокси, сканер контрактов, матчер роутов, валидатор схем в реальном времени, генератор C# стабов и in-memory тестовый хост (`StubServerHost`). |
+| [`src/TypedMock.Server`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/src/TypedMock.Server) | Standalone CLI-приложение: запуск прокси-рекордера (`typedmock`) и скаффолдинг новых проектов стабов (`typedmock init`). Поддерживает endpoint диагностики `/__typedmock/status`. |
 | [`src/SampleExternalService`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/src/SampleExternalService) | Реальный внешний веб-сервис для записи трафика. |
 | [`src/SampleClientApp`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/src/SampleClientApp) | Потребительский микросервис, вызывающий внешнее API через `RestClient.For<IWeatherApi>()`. |
-| [`tests/TypedMock.Tests`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/tests/TypedMock.Tests) | 19 интеграционных тестов, подтверждающих все сценарии (запись, воспроизведение, C# Setup, симуляция 500-х ошибок, обнаружение дрифта, C# генерация с pattern-matching, дедупликация и повторные вызовы). |
+| [`tests/TypedMock.Tests`](file:///c:/Users/serge/RiderProjects/MockingProxyProofOfConcept/tests/TypedMock.Tests) | 44 интеграционных и модульных теста, подтверждающих все сценарии (запись, генерация C# контроллеров, in-memory хостинг, обнаружение дрифта схемы, дедупликация, multi-upstream и скаффолдинг). |
 
 ---
 
@@ -116,7 +118,7 @@ public partial class WeatherApiStubController : ControllerBase, IWeatherApi
         {
             "london" => new WeatherForecastDto { City = "London", TemperatureC = 12, Summary = "Chilly" },
             "paris" => new WeatherForecastDto { City = "Paris", TemperatureC = 18, Summary = "Mild" },
-            _ => throw new StubNotFoundException($"No recorded stub for city '{city}'.")
+            _ => throw new KeyNotFoundException($"No recorded stub for city '{city}'.")
         };
     }
 
@@ -145,7 +147,7 @@ public partial class WeatherApiStubController : ControllerBase, IWeatherApi
                     Summary = "Hot",
                     Date = DateOnly.Parse("2026-11-11", CultureInfo.InvariantCulture)
                 },
-            _ => throw new StubNotFoundException($"No recorded stub for request '{request}'.")
+            _ => throw new KeyNotFoundException($"No recorded stub for request '{request}'.")
         };
     }
 
@@ -157,10 +159,10 @@ public partial class WeatherApiStubController : ControllerBase, IWeatherApi
 
 ### Диагностика стенда в реальном времени
 Эндпоинт `GET /__typedmock/status` возвращает текущее состояние:
-- Текущий режим работы (`Record`, `Replay`, `Hybrid`).
-- Целевой адрес реального сервиса (`targetUrl`).
-- Зарегистрированные интерфейсы и их методы.
-- Список загруженных сценариев.
+- Адрес по умолчанию (`defaultTargetUrl`).
+- Таблица multi-upstream маршрутизации (`upstreams`).
+- Зарегистрированные интерфейсы и конечные точки.
+- Число записанных взаимодействий.
 
 ---
 
@@ -168,16 +170,28 @@ public partial class WeatherApiStubController : ControllerBase, IWeatherApi
 
 Для демонстрации коллегам достаточно пройти следующие шаги в терминале.
 
-### Шаг 0: Запуск всех интеграционных тестов
-Убеждаемся, что все 20 тестов проходят:
+### Шаг 0: Запуск всех тестов
+Убеждаемся, что все 44 теста проходят:
 ```bash
 dotnet test
 ```
-*Результат: 20 passed.* Тесты демонстрируют программный C# API, сетевое проксирование, динамическую загрузку сборок в рантайме (`DynamicContractLoader`), Multi-Upstream маршрутизацию и пакетную генерацию контроллеров.
+*Результат: 44 passed.* Тесты демонстрируют сетевое проксирование, динамическую загрузку сборок в рантайме (`DynamicContractLoader`), Multi-Upstream маршрутизацию, пакетную генерацию контроллеров и скаффолдинг проектов.
 
 ---
 
-### Шаг 1: Запуск живого внешнего сервиса (Upstream)
+### Шаг 1: Скаффолдинг проекта стабов (`typedmock init`)
+Создаем новый автономный проект стабов:
+```bash
+dotnet run --project src/TypedMock.Server -- init \
+  --name=MyService.Stubs \
+  --contracts=src/ExternalService.Contracts/ExternalService.Contracts.csproj \
+  --out-dir=./src
+```
+Команда генерирует готовый проект `MyService.Stubs` с `.csproj`, `Program.cs`, `Dockerfile` и папкой `Controllers/`.
+
+---
+
+### Шаг 2: Запуск живого внешнего сервиса (Upstream)
 В первом окне терминала поднимаем образцовый сервис погоды:
 ```bash
 dotnet run --project src/SampleExternalService -- 5001
@@ -186,21 +200,25 @@ dotnet run --project src/SampleExternalService -- 5001
 
 ---
 
-### Шаг 2: Запуск TypedMock в режиме Record (Запись трафика)
-Во втором окне терминала запускаем TypedMock-прокси (указав сборку с контрактами через `--contracts`):
+### Шаг 3: Запуск TypedMock (Запись трафика)
+Во втором окне терминала запускаем TypedMock-прокси:
 ```bash
-dotnet run --project src/TypedMock.Server -- --mode=Record --port=5050 --target=http://localhost:5001 --contracts=src/ExternalService.Contracts/bin/Debug/net10.0/ExternalService.Contracts.dll --out-dir=./GeneratedStubs
+dotnet run --project src/TypedMock.Server -- \
+  --port=5050 \
+  --target=http://localhost:5001 \
+  --contracts=src/ExternalService.Contracts/bin/Debug/net10.0/ExternalService.Contracts.dll \
+  --out-dir=./src/ExternalService.Stubs/Controllers
 ```
-TypedMock динамически загружает интерфейсы и DTO из сборки контрактов, слушает на `http://localhost:5050` и готов прозрачно проксировать запросы на порт `5001`.
+TypedMock слушает на `http://localhost:5050` и прозрачно проксирует запросы на порт `5001`.
 
-Проверяем диагностику в браузере или через curl:
+Проверяем диагностику:
 ```bash
 curl http://localhost:5050/__typedmock/status
 ```
 
 ---
 
-### Шаг 3: Клиент делает запросы через TypedMock
+### Шаг 4: Клиент делает запросы через TypedMock
 В третьем окне терминала запускаем клиентское приложение, указав адрес прокси `http://localhost:5050`:
 ```bash
 dotnet run --project src/SampleClientApp -- http://localhost:5050
@@ -210,24 +228,21 @@ dotnet run --project src/SampleClientApp -- http://localhost:5050
 2. TypedMock перехватывает запрос, сопоставляет его с `IWeatherApi.GetForecastByCityAsync`.
 3. Пересылает запрос в настоящий сервис на порту 5001.
 4. Получает ответ, **валидирует его через DTO** (защита от runtime schema drift), отдает клиенту и сохраняет взаимодействие.
-5. Нажмите `Ctrl+C` во втором терминале — сервер завершит работу и автоматически сгенерирует строго типизированный C# контроллер в `./GeneratedStubs/WeatherApiStubController.cs`.
-
-Загляните в файл `./GeneratedStubs/WeatherApiStubController.cs` — там появился готовый компилируемый C# контроллер со строгим pattern matching по всем записанным маршрутам и телам запросов, без промежуточных JSON!
+5. Нажмите `Ctrl+C` во втором терминале — сервер завершит работу и автоматически сгенерирует строго типизированный C# контроллер в `./src/ExternalService.Stubs/Controllers/WeatherApiStubController.cs`.
 
 ---
 
-### Шаг 4: Использование сгенерированного стаба и режим Replay
+### Шаг 5: Автономный запуск стабов (Replay)
 1. Остановите реальный сервис в первом терминале (`Ctrl+C`). Теперь внешнего API нет!
-2. Сгенерированный контроллер `WeatherApiStubController.cs` можно напрямую подключить к тестам или запустить через встроенный `StubServerHost.StartAsync(typeof(WeatherApiStubController), port: 5050)`.
-3. Также можно запустить TypedMock в режиме **Replay**:
+2. Запустите хост стабов напрямую — без `TypedMock.Core`:
 ```bash
-dotnet run --project src/TypedMock.Server -- --mode=Replay --port=5050
+dotnet run --project src/ExternalService.Stubs -- 5050
 ```
-Клиентские приложения или автотесты смогут продолжать работу против стаба без запущенного реального бэкенда.
+3. Клиентские приложения или автотесты продолжают успешно работать против сгенерированного контроллера!
 
 ---
 
-### Шаг 5: Переключение сценариев «на лету» (для QA и тестовых стендов)
+### Шаг 6: Переключение сценариев «на лету» (для QA и тестовых стендов)
 Клиент может запросить специфический сценарий с помощью HTTP-заголовка:
 ```bash
 curl -H "X-Mock-Scenario: StormWarning" http://localhost:5050/weatherforecast/London
@@ -236,48 +251,53 @@ curl -H "X-Mock-Scenario: StormWarning" http://localhost:5050/weatherforecast/Lo
 ```bash
 curl "http://localhost:5050/weatherforecast/London?__scenario=StormWarning"
 ```
-Сервер автоматически выбирает правило, настроенное для данного сценария (через Fluent C# сетап или точку расширения `On<Method>Async` в сгенерированном стабе).
+Хост стабов автоматически помещает имя сценария в `HttpContext.Items["TypedMock.Scenario"]` для обработки в контроллере.
 
 ---
 
-### Шаг 6: Демонстрация защиты от Schema Drift
+### Шаг 7: Демонстрация защиты от Schema Drift
 В TypedMock защита от устаревания работает на двух уровнях:
 1. **Compile-Time Drift (в сгенерированных C# стабах):**
-Если команда сервиса-зависимости изменила свой NuGet-пакет контракта (удалила метод, переименовала свойство в DTO), ваш проект со стабами просто **не скомпилируется** (`CS0535` / `CS1061`). Ошибка выявляется мгновенно на `dotnet build` до любого запуска тестов!
+Если команда сервиса-зависимости изменила свой NuGet-пакет контракта (удалила метод, переименовала свойство в DTO), проект со стабами просто **не скомпилируется** (`CS0535` / `CS1061`). Ошибка выявляется мгновенно на `dotnet build` до любого запуска тестов!
 2. **Runtime Drift (в Record-прокси):**
 Если внешний сервис вернет ответ, нарушающий типы полей в DTO (например, `temperatureC: "NotANumber"`), прокси немедленно выбросит `ContractValidationException`:
 > *"Schema drift detected! Response payload does not match contract DTO WeatherForecastDto."*
 
-Это гарантирует, что устаревшие или поврежденные данные никогда не просочатся незамеченными.
-
 ---
 
-### Шаг 7: Использование в C# автотестах (Fluent Setup)
-Разработчикам не обязательно работать с файлами на диске. В коде тестов всё настраивается привычным строго типизированным стилем:
+### Шаг 8: Использование в C# автотестах (In-Memory Stub Hosting)
+В тестах контроллеры поднимаются легковесно через `StubServerHost`:
 
 ```csharp
 [Fact]
 public async Task MyIntegrationTest()
 {
-    await using var mockServer = new TypedMockServer(new TypedMockOptions { Mode = MockMode.Replay });
+    // Поднимаем сгенерированный стаб-контроллер в памяти:
+    await using var stubHost = await StubServerHost.StartAsync<WeatherApiStubController>(port: 0);
+    var url = StubServerHost.GetServerUrl(stubHost);
 
-    // Строго типизированный сетап с автодополнением полей IDE:
-    mockServer.For<IWeatherApi>()
-        .Setup(x => x.GetForecastByCityAsync("London"))
-        .Returns(new WeatherForecastDto
-        {
-            City = "London",
-            TemperatureC = 30,
-            Summary = "Heatwave"
-        });
-
-    await mockServer.StartAsync();
-
-    // Тестируемый сервис указывает на mockServer.BaseUrl
-    var client = RestClient.For<IWeatherApi>(mockServer.BaseUrl);
+    // Тестируемый сервис указывает на адрес стаба:
+    var client = RestClient.For<IWeatherApi>(url);
     var result = await client.GetForecastByCityAsync("London");
 
-    result.Summary.Should().Be("Heatwave");
+    result.City.Should().Be("London");
+    result.TemperatureC.Should().Be(12);
+}
+```
+
+Для нестандартных сценариев достаточно переопределить virtual-хук:
+```csharp
+[ApiController]
+public class ChaosWeatherStubController : WeatherApiStubController
+{
+    protected override Task<WeatherForecastDto?> OnGetForecastByCityAsync(string city)
+    {
+        if (city == "ErrorCity")
+        {
+            throw new HttpRequestException("Station down", null, HttpStatusCode.ServiceUnavailable);
+        }
+        return base.OnGetForecastByCityAsync(city);
+    }
 }
 ```
 
@@ -293,7 +313,7 @@ public async Task MyIntegrationTest()
 | **Скорость выполнения тестов** | Медленно (сетевые задержки стендов) | Быстро | Максимально быстро (Kestrel in-process) |
 | **Защита от изменения схемы (Schema Drift)** | ❌ Нет (узнаем только при падении) | ❌ Нет (тихий рассинхрон с JSON) |  **Да (Runtime DTO validation + Compile-time stubs)** |
 | **Поддержка при рефакторинге DTO** | Ручной поиск поломок | Ручная правка сотен JSON файлов |  **IDE / компилятор подсказывают ошибки** |
-| **Симуляция 500-х ошибок / задержек** | Сложно / почти невозможно | Требует ручного написания JSON |  **В 2 строки C# кода или готовый сценарий** |
+| **Автономность стендов** | Привязка к внешнему стенду | Нужен WireMock-сервер |  **Чистый ASP.NET Core хост без сторонних зависимостей** |
 | **Порог входа для .NET разработчика** | Низкий | Средний (учить синтаксис маппингов) |  **Нулевой (привычный C#, RestEase и DTO)** |
 
 ---
@@ -301,22 +321,19 @@ public async Task MyIntegrationTest()
 ## 7. Вопросы, которые могут задать коллеги (FAQ)
 
 ### Вопрос 1: «А если у нас не RestEase, а Refit или HttpClient?»
-- `TypedMock.Core` построен модульно. Сканер интерфейсов (`RestEaseContractScanner`) абстрагирован интерфейсом `IContractScanner`.
-- Добавить поддержку `Refit` или открытых интерфейсов со стандартными атрибутами ASP.NET Core (`[HttpGet]`, `[HttpPost]`) — вопрос реализации одного сканера на ~100 строк кода.
+- `TypedMock.Core` построен модульно. Сканер интерфейсов (`RestEaseContractScanner`) легко расширяется на Refit или ASP.NET Core интерфейсы.
 
 ### Вопрос 2: «Как это деплоить на общие тестовые стенды?»
-- Проект `TypedMock.Server` упаковывается в легкий Docker-образ.
-- На стенде мок-сервер разворачивается рядом с тестируемым микросервисом. В конфигурации сервиса `WeatherApi__BaseUrl` просто переключается на URL мока.
-- Тест-раннеры передают нужный заголовок `X-Mock-Scenario: <Name>` в запросах.
+- Сгенерированный проект со стабами собирается в стандартный Docker-образ (`docker build -t external-stubs -f src/ExternalService.Stubs/Dockerfile .`).
+- На стенде мок-контейнер разворачивается рядом с сервисом.
+- Тест-раннеры при необходимости передают заголовок `X-Mock-Scenario: <Name>` в запросах.
 
-### Вопрос 3: «Зачем компилировать C# стабы контроллеров вместо сохранения файлов маппингов?»
-- Сгенерированные C# стабы контроллеров компилируются вместе с автотестами: любые изменения DTO и сигнатур методов проверяются на этапе `dotnet build`.
-- Полная поддержка IDE: навигация, автодополнение IntelliSense, безопасный рефакторинг по `F2`.
-- В тестах контроллеры могут вызываться in-memory без HTTP-сокетов, обеспечивая максимальную скорость выполнения.
-- На стендах стаб-контроллеры легко поднимаются через легковесный встроенный Kestrel (`StubServerHost`).
+### Вопрос 3: «Зачем два отдельных сервера — рекордер и хост стабов?»
+- **Рекордер (`TypedMock.Server`)** — это инструмент разработки (CLI). Ему нужны тяжелые механизмы: сканирование сборок, реверс-проксирование, валидация DTO, генерация исходного кода.
+- **Хост стабов (`ExternalService.Stubs`)** — это легковесный, простой ASP.NET Core сервис без внешних библиотек. Он быстро стартует, потребляет минимум ресурсов и дает 100% гарантию сборки в CI/CD.
 
 ---
 
 ## 8. Итог
 
-Proof-of-Concept доказывает, что в .NET-микросервисах можно избавиться от головной боли с ручными JSON-моками и нестабильными внешними зависимостями, объединив **проксирование реального трафика** со **строгой типизацией C# контрактов**.
+Proof-of-Concept доказывает, что в .NET-микросервисах можно избавиться от головной боли с ручными JSON-моками и нестабильными внешними зависимостями, объединив **проксирование реального трафика** со **строгой типизацией C# контрактов** и **автономными сгенерированными стабами**.

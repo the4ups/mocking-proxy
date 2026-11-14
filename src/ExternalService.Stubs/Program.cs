@@ -1,5 +1,8 @@
-using System.Reflection;
-using TypedMock.Core.Hosting;
+using System.Net;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 
 Console.WriteLine("==================================================");
 Console.WriteLine("  ExternalService.Stubs - Standalone Mock Host   ");
@@ -18,29 +21,52 @@ foreach (var arg in args)
     }
 }
 
-var app = await StubServerHost.StartAsync(typeof(Program).Assembly, port);
-var url = StubServerHost.GetServerUrl(app);
+var builder = WebApplication.CreateEmptyBuilder(new WebApplicationOptions
+{
+    Args = args,
+    EnvironmentName = "Development"
+});
 
-Console.WriteLine($"[Running] ExternalService.Stubs server listening on: {url}");
-Console.WriteLine("Press Ctrl+C to stop.");
+builder.WebHost.UseKestrel(k =>
+{
+    k.Listen(IPAddress.Any, port);
+});
 
-var cts = new CancellationTokenSource();
-Console.CancelKeyPress += (_, e) =>
-{
-    e.Cancel = true;
-    cts.Cancel();
-};
+builder.Services.AddRouting();
+builder.Services.AddControllers();
 
-try
+var app = builder.Build();
+
+// Exception handling middleware for 404s
+app.Use(async (context, next) =>
 {
-    await Task.Delay(Timeout.Infinite, cts.Token);
-}
-catch (OperationCanceledException)
+    try
+    {
+        await next(context);
+    }
+    catch (KeyNotFoundException ex)
+    {
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        context.Response.ContentType = "application/json; charset=utf-8";
+        await context.Response.WriteAsJsonAsync(new { error = ex.Message, statusCode = 404 });
+    }
+});
+
+// Scenario resolution middleware
+app.Use(async (context, next) =>
 {
-    Console.WriteLine("Shutting down stub server...");
-}
-finally
-{
-    await app.StopAsync();
-    await app.DisposeAsync();
-}
+    var scenarioName = context.Request.Headers["X-Mock-Scenario"].FirstOrDefault();
+    if (string.IsNullOrWhiteSpace(scenarioName))
+    {
+        scenarioName = context.Request.Query["__scenario"].FirstOrDefault();
+    }
+    scenarioName ??= "default";
+    context.Items["TypedMock.Scenario"] = scenarioName;
+
+    await next(context);
+});
+
+app.MapControllers();
+
+Console.WriteLine($"[Running] ExternalService.Stubs server listening on port: {port}");
+await app.RunAsync();
