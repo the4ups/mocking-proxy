@@ -175,7 +175,33 @@ dotnet pack src/TypedMock.Core/TypedMock.Core.csproj -c Release
 dotnet pack src/TypedMock.Server/TypedMock.Server.csproj -c Release
 ```
 
-### 2. Docker
+### 2. Using TypedMock with NuGet Packages (without source code server)
+After packing the projects above, you can consume the CLI tool and stubs as NuGet packages instead of running from source:
+
+1. Install the global tool:
+   ```bash
+   dotnet tool install --global TypedMock.Server --version 0.1.0
+   ```
+
+2. Reference the contracts package in your consumer project:
+   ```bash
+   dotnet add package TypedMock.Core --version 0.1.0
+   ```
+
+3. Run the recording proxy with packaged contracts:
+   ```bash
+   typedmock --port=5050 \
+     --target=http://localhost:5001 \
+     --contracts=ExternalService.Contracts.dll \
+     --out-dir=./GeneratedStubs
+   ```
+
+4. Run the standalone stubs host from the generated stubs project (zero dependency on `TypedMock.Core`):
+   ```bash
+   dotnet run --project src/ExternalService.Stubs -- 5050
+   ```
+
+### 3. Docker
 Both the recording proxy and the standalone stubs projects include Dockerfiles for containerized environments:
 
 ```bash
